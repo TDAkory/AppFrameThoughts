@@ -5,7 +5,9 @@
 ## Monitor
 
 * [Log](monitor/log.md)
-* [Metrics](monitor/metrics.md)
+* [Metrics](monitor/metric/metrics.md)
+  * [prometheus](monitor/metric/prometheus/README.md)
+    * [01_source_code_structure](monitor/metric/prometheus/01_source_code_structure.md)
 * [Trace](monitor/trace/README.md)
   * [OpenTracing](monitor/trace/opentracing.md)
   * [Jaeger](monitor/trace/jaeger/README.md)
