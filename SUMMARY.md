@@ -4,7 +4,7 @@
 
 ## Articles
 
-* [Article\_lists](articles/article_lists.md)
+* [Article\_lists](Articles/article_lists.md)
 
 ## CNCF
 
@@ -15,13 +15,16 @@
   * [Basic\_Concepts](CNCF/Kubernetes/Basic\_Concepts.md)
   * [Basic\_workload](CNCF/Kubernetes/Basic\_workload.md)
 
+## Computer
+* [Computer](Computer/index.md)
+
 ## Monitor
 
-* [Log](monitor/log.md)
-* [Metrics](monitor/metric/metrics.md)
-  * [prometheus](monitor/metric/prometheus/README.md)
-    * [01\_source\_code\_structure](monitor/metric/prometheus/01\_source\_code\_structure.md)
-* [Trace](monitor/trace/README.md)
-  * [OpenTracing](monitor/trace/opentracing.md)
-  * [Jaeger](monitor/trace/jaeger/README.md)
-    * [How jaeger works](monitor/trace/jaeger/how-jaeger-works.md)
+* [Log](Monitor/log.md)
+* [Metrics](Monitor/metric/metrics.md)
+  * [prometheus](Monitor/metric/prometheus/README.md)
+    * [01\_source\_code\_structure](Monitor/metric/prometheus/01\_source\_code\_structure.md)
+* [Trace](Monitor/trace/README.md)
+  * [OpenTracing](Monitor/trace/opentracing.md)
+  * [Jaeger](Monitor/trace/jaeger/README.md)
+    * [How jaeger works](Monitor/trace/jaeger/how-jaeger-works.md)
