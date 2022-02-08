@@ -42,7 +42,8 @@ spec:
 ```
 
 ### Cron schedule syntax
-```
+
+```yaml
 #      ┌────────────────── timezone (optional)
 #      |      ┌───────────── minute (0 - 59)
 #      |      │ ┌───────────── hour (0 - 23)

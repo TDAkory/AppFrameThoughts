@@ -1,50 +1,50 @@
 ## Kubernetes主要由以下几个核心组件组成：
 
--   etcd保存了整个集群的状态；
--   apiserver提供了资源操作的唯一入口，并提供认证、授权、访问控制、API注册和发现等机制；
--   controller manager负责维护集群的状态，比如故障检测、自动扩展、滚动更新等；
--   scheduler负责资源的调度，按照预定的调度策略将Pod调度到相应的机器上；
--   kubelet负责维持容器的生命周期，同时也负责Volume（CVI）和网络（CNI）的管理；
--   Container runtime负责镜像管理以及Pod和容器的真正运行（CRI）；
--   kube-proxy负责为Service提供cluster内部的服务发现和负载均衡；
+- etcd保存了整个集群的状态；
+- apiserver提供了资源操作的唯一入口，并提供认证、授权、访问控制、API注册和发现等机制；
+- controller manager负责维护集群的状态，比如故障检测、自动扩展、滚动更新等；
+- scheduler负责资源的调度，按照预定的调度策略将Pod调度到相应的机器上；
+- kubelet负责维持容器的生命周期，同时也负责Volume（CVI）和网络（CNI）的管理；
+- Container runtime负责镜像管理以及Pod和容器的真正运行（CRI）；
+- kube-proxy负责为Service提供cluster内部的服务发现和负载均衡；
 
 除了核心组件，还有一些推荐的add-ons（扩展）：
 
--   kube-dns负责为整个集群提供DNS服务
--   Ingress Controller为服务提供外网入口
--   Heapster提供资源监控
--   Dashboard提供GUI
--   Federation提供跨可用区的集群
--   Fluentd-elasticsearch提供集群日志采集、存储与查询
+- kube-dns负责为整个集群提供DNS服务
+- Ingress Controller为服务提供外网入口
+- Heapster提供资源监控
+- Dashboard提供GUI
+- Federation提供跨可用区的集群
+- Fluentd-elasticsearch提供集群日志采集、存储与查询
 
 ## 分层架构
 
--   核心层：Kubernetes最核心的功能，对外提供API构建高层的应用，对内提供插件式应用执行环境
--   应用层：部署（无状态应用、有状态应用、批处理任务、集群应用等）和路由（服务发现、DNS解析等）
--   管理层：系统度量（如基础设施、容器和网络的度量），自动化（如自动扩展、动态Provision等）以及策略管理（RBAC、Quota、PSP、NetworPolicy等）
--   接口层：kubectl命令行工具、客户端SDK以及集群联邦
--   生态系统：在接口层之上的庞大容器集群管理调度的生态系统，可以划分为两个范畴
-    -   Kubernetes外部：日志、监控、配置管理、CI、CD、Workflow、FaaS、OTS应用、ChatOps等
-    -   Kubernetes内部：CRI、CNI、CVI、镜像仓库、Cloud Provider、集群自身的配置和管理等
+- 核心层：Kubernetes最核心的功能，对外提供API构建高层的应用，对内提供插件式应用执行环境
+- 应用层：部署（无状态应用、有状态应用、批处理任务、集群应用等）和路由（服务发现、DNS解析等）
+- 管理层：系统度量（如基础设施、容器和网络的度量），自动化（如自动扩展、动态Provision等）以及策略管理（RBAC、Quota、PSP、NetworPolicy等）
+- 接口层：kubectl命令行工具、客户端SDK以及集群联邦
+- 生态系统：在接口层之上的庞大容器集群管理调度的生态系统，可以划分为两个范畴
+  - Kubernetes外部：日志、监控、配置管理、CI、CD、Workflow、FaaS、OTS应用、ChatOps等
+  - Kubernetes内部：CRI、CNI、CVI、镜像仓库、Cloud Provider、集群自身的配置和管理等
 
 ## 架构设计原则
 
--   只有apiserver可以直接访问etcd存储，其他服务必须通过Kubernetes API来访问集群状态
--   单节点故障不应该影响集群的状态
--   在没有新请求的情况下，所有组件应该在故障恢复后继续执行上次最后收到的请求（比如网络分区或服务重启等）
--   所有组件都应该在内存中保持所需要的状态，apiserver将状态写入etcd存储，而其他组件则通过apiserver更新并监听所有的变化
--   优先使用事件监听而不是轮询
+- 只有apiserver可以直接访问etcd存储，其他服务必须通过Kubernetes API来访问集群状态
+- 单节点故障不应该影响集群的状态
+- 在没有新请求的情况下，所有组件应该在故障恢复后继续执行上次最后收到的请求（比如网络分区或服务重启等）
+- 所有组件都应该在内存中保持所需要的状态，apiserver将状态写入etcd存储，而其他组件则通过apiserver更新并监听所有的变化
+- 优先使用事件监听而不是轮询
 
 ## 引导（Bootstrapping）原则
 
--   Self-hosting 是目标
--   减少依赖，特别是稳态运行的依赖
--   通过分层的原则管理依赖
--   循环依赖问题的原则
-    -   同时还接受其他方式的数据输入（比如本地文件等），这样在其他服务不可用时还可以手动配置引导服务
-    -   状态应该是可恢复或可重新发现的
-    -   支持简单的启动临时实例来创建稳态运行所需要的状态；使用分布式锁或文件锁等来协调不同状态的切换（通常称为pivoting技术）
-    -   自动重启异常退出的服务，比如副本或者进程管理器等
+- Self-hosting 是目标
+- 减少依赖，特别是稳态运行的依赖
+- 通过分层的原则管理依赖
+- 循环依赖问题的原则
+  - 同时还接受其他方式的数据输入（比如本地文件等），这样在其他服务不可用时还可以手动配置引导服务
+  - 状态应该是可恢复或可重新发现的
+  - 支持简单的启动临时实例来创建稳态运行所需要的状态；使用分布式锁或文件锁等来协调不同状态的切换（通常称为pivoting技术）
+  - 自动重启异常退出的服务，比如副本或者进程管理器等
 
 ## 核心技术概念和API对象
 
@@ -128,8 +128,6 @@ Secret是用来保存和传递密码、密钥、认证凭证这些敏感信息�
 
 K8s在1.3版本中发布了alpha版的基于角色的访问控制（Role-based Access Control，RBAC）的授权模式。相对于基于属性的访问控制（Attribute-based Access Control，ABAC），RBAC主要是引入了角色（Role）和角色绑定（RoleBinding）的抽象概念。在ABAC中，K8s集群中的访问策略只能跟用户直接关联；而在RBAC中，访问策略可以跟某个角色关联，具体的用户在跟一个或多个角色相关联。显然，RBAC像其他新功能一样，每次引入新功能，都会引入新的API对象，从而引入新的概念抽象，而这一新的概念抽象一定会使集群服务管理和使用更容易扩展和重用。
 
-  
-  
 作者：半兽人  
 链接：https://www.orchome.com/1322  
 来源：OrcHome  
