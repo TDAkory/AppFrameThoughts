@@ -1,5 +1,7 @@
 # Intro
 
+- [InfluxDB中文文档](https://jasper-zhang1.gitbooks.io/influxdb/content/)
+
 > 时序数据库 InfluxDB®版是一款专门处理高写入和查询负载的时序数据库，用于存储大规模的时序数据并进行实时分析，包括来自DevOps监控、应用指标和IoT传感器上的数据。
 
 ## 主要特点
