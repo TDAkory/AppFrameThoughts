@@ -16,5 +16,12 @@
 
 ## Ref
 
+### General
+
 - [数据流压缩原理（Deflate压缩算法、gzip、zlib）](https://blog.51cto.com/u_15346415/5026718)
 - [Zstandard Compression and the 'application/zstd' Media Type](https://datatracker.ietf.org/doc/html/rfc8878#name-entropy-encoding)
+- [bit packing](https://kinematicsoup.com/news/2016/9/6/data-compression-bit-packing-101)
+
+### Awesome
+
+- [Intel(R) Intelligent Storage Acceleration Library](https://github.com/intel/isa-l)
