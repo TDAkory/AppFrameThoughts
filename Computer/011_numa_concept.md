@@ -1,4 +1,6 @@
-# NUMA Concept
+# 理解NUMA中的概念
+
+> [Non-uniform memory access](https://en.wikipedia.org/wiki/Non-uniform_memory_access)
 
 ## 基本概念
 
