@@ -1,0 +1,3 @@
+# Trace Key Points
+
+* 在软件系统中，每秒钟有无数的 Context 在流动。这些 Context 可能是一个实时在线请求，也可能是一个异步处理任务。每个 Context 都会在多个微服务节点中持续传播才能最终完成。所有的监控数据（包括 Metric, Log 等）都源自于某一个 Context。Trace 就是这个 Context 的数据载体，通过标准化的数据模型，记录 Context 在多个微服务中的全部执行过程，并沿途关联上此 Context 上发生的所有事件（包括 Metric, Log 等）。Trace 不仅仅是用来查看耗时分布甘特图的工具，Trace 是海量监控数据的 Context 链接纽带。基于可靠关联的 Metric / Trace / Log数据，也构建出强大的可观测性能力，回答监控排障，SLO 调优，架构梳理，流量估算，智能化故障归因等众多复杂问题。
