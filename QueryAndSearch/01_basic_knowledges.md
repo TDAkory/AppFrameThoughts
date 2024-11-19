@@ -95,3 +95,25 @@
 - **例子**：`SELECT name, rank() OVER (ORDER BY score DESC) FROM students`
 
 这些算子在查询引擎中的作用是将复杂的用户查询分解为一系列可管理和可优化的步骤。数据库查询优化器会根据数据的统计信息、索引的存在、查询的具体需求等因素，选择最合适的算子组合和执行顺序来执行查询，以达到最优的性能。
+
+## Volcano模型
+
+该计算模型将关系代数中每一种操作抽象为一个 Operator，将整个 SQL 构建成一个 Operator 树，查询树自顶向下的调用 next() 接口，一般只返回一条数据 (tuple)。数据则自底向上的被拉取处理。这种处理方式也称为拉取执行模型 (Pull Based)。
+
+![volcano](https://github.com/TDAkory/ImageResources/blob/main/img/AppFrameThoughts/volcano.png?raw=true)
+
+## Materialization模型
+
+每个 operator 一次处理所有的输入，处理完之后将所有结果一次性输出。物化模型更适合 OLTP 负载，这些查询每次只访问小规模的数据，只需要少量的函数调用。
+
+![materialization](https://github.com/TDAkory/ImageResources/blob/main/img/AppFrameThoughts/materialization.png?raw=true)
+
+## Vectorized/batch模型
+
+向量化模型 和 火山模型 类似，每个 operator 需要实现一个 next() 函数，但是每次调用 next() 函数会返回一批的元组（tuples），而不是一个元组，所以向量化模型也可称为批处理模型。这种处理方式也称为推送执行模型 (Push Based)。
+
+## pull-based & push-based
+
+![pull-based & push-based](https://github.com/TDAkory/ImageResources/blob/main/img/AppFrameThoughts/push-pull-model.png?raw=true)
+
+> [数据库理论 之 执行模型](https://acronymor.com/posts/database/ch04/)
