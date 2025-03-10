@@ -16,7 +16,7 @@ helm利用Chart来封装kubernetes原生应用程序的一些列yaml文件，可
 * 如何分发和复用一套应用模板
 * 如何将应用的一系列资源当做一个软件包管理
 
-![helm架构](https://raw.githubusercontent.com/TDAkory/ImageResources/main/img/20220418104653.png)
+![helm架构](https://raw.githubusercontent.com/TDAkory/ImageResources/master/img/20220418104653.png)
 
 ## helm组件及相关基本概念
 
@@ -36,7 +36,7 @@ Helm的软件仓库，Repository本质上是一个web服务器，该服务器保
 
 这张图描述了 Helm 的几个关键组件 Helm（客户端）、Tiller（服务器）、Repository（Chart 软件仓库）、Chart（软件包）之间的关系。
 
-![helm的工作原理](https://raw.githubusercontent.com/TDAkory/ImageResources/main/img/20220418105121.png)
+![helm的工作原理](https://raw.githubusercontent.com/TDAkory/ImageResources/master/img/20220418105121.png)
 
 * Chart Install过程
   * Helm从指定的目录或者TAR文件中解析出chart结构信息.
