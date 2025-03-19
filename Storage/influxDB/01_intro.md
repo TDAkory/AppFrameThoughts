@@ -1,6 +1,8 @@
 # Intro
 
 - [InfluxDB中文文档](https://jasper-zhang1.gitbooks.io/influxdb/content/)
+- [influxdata](https://www.influxdata.com/)
+- 
 
 > 时序数据库 InfluxDB®版是一款专门处理高写入和查询负载的时序数据库，用于存储大规模的时序数据并进行实时分析，包括来自DevOps监控、应用指标和IoT传感器上的数据。
 
@@ -33,3 +35,9 @@
 - field name: 例如上面数据中的 value 就是 fieldName，InfluxDB 中支持一条数据中插入多个 fieldName，这其实是一个语法上的优化，在实际的底层存储中，是当作多条数据来存储。
 
 - timestamp: 每一条数据都需要指定一个时间戳，在 TSM 存储引擎中会特殊对待，以为了优化后续的查询操作。
+
+### 行协议
+
+```text
+<measurement>[,<tag_key>=<tag_value>[,<tag_key>=<tag_value>...]] <field_key>=<field_value>[,<field_key>=<field_value>...] [<timestamp>]
+```

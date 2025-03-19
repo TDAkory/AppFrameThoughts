@@ -9,3 +9,5 @@ This includes such topics as:
 * In-memory analytics and query processing
 
 ## [High-Level Overview of C++ Library](https://arrow.apache.org/docs/cpp/overview.html)
+
+## [format spec](https://arrow.apache.org/docs/format/Intro.html)
