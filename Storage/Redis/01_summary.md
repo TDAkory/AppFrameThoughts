@@ -36,3 +36,47 @@ KV全内存
 ### 小结
 
 Redis存储引擎不标准，适用于数据量小场景，方便做数据库Dump和快照（通过fork）。
+
+## Redis索引
+
+- **索引依赖**：Redis 基于全内存存储，对索引依赖不强。实例重启时，通过加载 RDB 或 AOF 获取全量数据，在内存中构建 hash 结构作为“主索引”，建立 key 到内存中 object 的映射，无需关联硬盘地址。
+
+```c
+typedef struct dictEntry {
+    void *key;                //键
+    union {
+        void *val;            //值
+        uint64_t u64;
+        int64_t s64;
+        double d;
+    } v;
+    struct dictEntry *next; //指向下一个节点，形成链表
+} dictEntry;
+typedef struct dictht {
+    dictEntry **table; //两个数组，实现渐进式rehash的关键。
+    unsigned long size;
+    unsigned long sizemask;
+    unsigned long used;
+} dictht;
+```
+
+- **hash结构实现**：采用普通开散列方式，发生冲突时通过 `dictEntry` 的 `next` 指针串联节点。`dictEntry` 结构体包含键（`key`）、值（`v`，以联合类型存储不同类型值 ）以及指向下一节点的指针（`next` ）；`dictht` 结构体包含哈希表数组（`table` ，是渐进式 rehash 关键 ）、大小（`size` ）、掩码（`sizemask` ）和已使用数量（`used` ）。
+- **渐进式rehash**：用于解决哈希表扩容时 O(N) 操作可能阻塞服务器的问题。扩容时先申请新内存，然后在每次增删改查操作时逐步迁移原 `dict` 成员到新 `dict`。查询时依次查原表（`table[0]` ）和新表（`table[1]` ）；添加只在新表；删除依次查原表和新表。
+
+## 主从复制
+
+- **快照**：通过 `fork` 实现，利用操作系统命令，无需复杂存储结构设计。
+- **全量复制**：新从库向主库发送 `FULLRESYNC` 命令请求全量数据，本质类似 `RDB` 生成，由 `fork` 产生快照，在子进程生成 `RDB` 并直接写入目标 `socket`。 
+- **增量复制**：已有数据的从库在断链或切主后，发送 `PSYNC` 命令同步增量数据，即同步 `aof_buf` 中的 `WAL` 。 
+- **主从级联**：主库生成 `RDB` 开销大，采用从库挂载从库模式可分担压力，但会导致从库数据一致性延迟增加。 
+
+## 事务与Pipeline
+
+- **Pipeline**：保证若干命令通过一次 `TCP` 连接传递到服务端并顺序执行，期间可能插入其他客户端命令。 
+- **事务**
+    - **原子性**：Redis 不支持事务回滚，若事务有错误不影响其他正确命令执行。编写无错误事务可实现原子性，但存在限制。 
+    - **一致性**：在多种出错情况下能满足一致性要求，因其约束较少。 
+    - **隔离性**：事务总是串行执行，满足隔离性要求。 
+    - **持久性**：仅在支持 `AOF/RDB` 持久化且 `appendsync` 配置为 `always` 时可保证，
+
+主从复制异步模式下切主可能丢数据，存在持久化风险。总体在原子性、持久性上有取舍，合理配置可保障一致性。 
