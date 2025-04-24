@@ -15,3 +15,5 @@ FasterKV的整体架构可分为3个部分：
    1. In-Memory，即全内存存储
    2. Append-Only-Log，基于Append-Only的大数据量解决方案
    3. Hybrid-Log，融合上面两种思想，支持就地更新(in-place updates)的大数据量解决方案
+
+#
