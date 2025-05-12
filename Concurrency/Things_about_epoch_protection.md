@@ -275,462 +275,431 @@ int main() {
 
 首先介绍其`LightEpoch`的实现：
 
-```c#
-// Copyright (c) Microsoft Corporation. All rights reserved.
-// Licensed under the MIT license.
+* Epoch：Epoch 是一个全局的版本号，用于标识系统的不同状态。每当系统状态发生变化时，Epoch 会递增。线程可以通过进入和离开受保护的代码区域来与 Epoch 进行交互。
+* Epoch 表：用于记录每个线程当前所在的 Epoch。每个线程在进入受保护的代码区域时，会在 Epoch 表中记录自己的 Epoch 信息；离开时则清除该信息
+* Drain 列表：用于存储需要在某个 Epoch 变为安全可回收时执行的操作。当某个 Epoch 不再被任何线程使用时，会执行 Drain 列表中与该 Epoch 相关的操作。
 
-using System;
-using System.Threading;
-using System.Runtime.InteropServices;
-using System.Runtime.CompilerServices;
-using System.Diagnostics;
+下面是一个C++复刻版的实现：
 
-namespace FASTER.core
-{
-    // Epoch protection
-    public unsafe sealed class LightEpoch
-    {
-        // 与线程相关的静态变量; see https://github.com/microsoft/FASTER/pull/746
-        // 这些变量使用 [ThreadStatic] 属性标记，确保每个线程都有自己的副本，在这里我们省略了这些标记
-        private class Metadata
-        {
-            // 线程的唯一标识符
-            internal static int threadId;
+```cpp
+/*
+ * a re-implement of LightEpoch from FasterKV of microsoft
+ * ref: https://github.com/microsoft/FASTER/blob/main/cs/src/core/Epochs/LightEpoch.cs
+ */
 
-            // 线程在 epoch 表中的起始偏移量，用于减少探测冲突 (to reduce probing if <see cref="startOffset1"/> slot is already filled)
-            // startOffset2 用于在 startOffset1 对应的槽已被占用时提供备用偏移量
-            internal static ushort startOffset1;
-            internal static ushort startOffset2;
+#include <algorithm>
+#include <thread>
+#include <assert.h>
 
-            // 线程在 epoch 表中的条目索引
-            internal static int threadEntryIndex;
+#include <iostream>
+#include <vector>
+#include <atomic>
+#include <thread>
+#include <functional>
+#include <mutex>
+#include <algorithm>
 
-            // 使用该条目的实例数量
-            internal static int threadEntryIndexCount;
+// 定义缓存行大小
+constexpr int kCacheLineBytes = 64;
+// 定义无效索引
+constexpr int kInvalidIndex = 0;
+// 定义表大小
+constexpr int kTableSize = 128;
+// 定义 drain 列表大小
+constexpr int kDrainListSize = 16;
+
+// 定义 Epoch 表条目结构体
+struct alignas(kCacheLineBytes) Entry {
+    // 线程本地的 Epoch 值
+    std::atomic<long> local_current_epoch{0};
+    // 线程 ID
+    std::atomic<int> thread_id{0};
+    // 重入标志
+    std::atomic<int> reentrant{0};
+    // 标记数组
+    long markers[6] = {0};
+
+    std::string ToString() const {
+        return "lce = " + std::to_string(local_current_epoch.load()) + ", tid = " + std::to_string(thread_id.load()) + ", re-ent " + std::to_string(reentrant.load());
+    }
+};
+
+// 定义 Epoch 操作对结构体
+struct EpochAction {
+    std::atomic_long epoch;
+    std::function<void()> action;
+
+    std::string ToString() const {
+        return "epoch = " + std::to_string(epoch) + ", action = " + (action ? action.target_type().name() : "n/a");
+    }
+};
+
+// 定义 Metadata 类，用于存储线程本地数据
+class Metadata {
+public:
+    static thread_local int thread_id;
+    static thread_local int start_offset1;
+    static thread_local int start_offset2;
+    static thread_local int thread_entry_index;
+    static thread_local int thread_entry_index_count;
+};
+
+thread_local int Metadata::thread_id = 0;
+thread_local int Metadata::start_offset1 = 0;
+thread_local int Metadata::start_offset2 = 0;
+thread_local int Metadata::thread_entry_index = kInvalidIndex;
+thread_local int Metadata::thread_entry_index_count = 0;
+
+// 定义 LightEpoch 类
+class LightEpoch {
+    friend class LightEpochTest_MarkerAndCheckComplete_Test;
+
+public:
+    LightEpoch() {
+        table_ = new Entry[kTableSize + 2];
+        memset(table_, 0, sizeof(Entry) * (kTableSize + 2));
+
+        thread_index_ = new Entry[kTableSize + 2];
+        memset(thread_index_, 0, sizeof(Entry) * (kTableSize + 2));
+
+        current_epoch_ = 1;
+        safe_to_reclaim_epoch_ = 0;
+        for (int i = 0; i < kDrainListSize; ++i) {
+            drain_list_[i].epoch = std::numeric_limits<long>::max();
+        }
+        drain_count_ = 0;
+    }
+
+    ~LightEpoch() {
+        delete[] table_;
+        table_ = nullptr;
+        delete[] thread_index_;
+        thread_index_ = nullptr;
+
+    }
+
+    // 检查当前实例是否被保护
+    bool ThisInstanceProtected() const {
+        int entry = Metadata::thread_entry_index;
+        if (kInvalidIndex != entry) {
+            return table_[entry].thread_id.load() == entry;
+        }
+        return false;
+    }
+
+    // 进入保护并处理 drain 列表
+    void ProtectAndDrain() {
+        int entry = Metadata::thread_entry_index;
+        table_[entry].thread_id.store(entry);
+        table_[entry].local_current_epoch.store(current_epoch_.load());
+
+        if (drain_count_ > 0) {
+            Drain(table_[entry].local_current_epoch.load());
+        }
+    }
+
+    // 暂停
+    void Suspend() {
+        Release();
+        if (drain_count_ > 0) {
+            SuspendDrain();
+        }
+    }
+
+    // 恢复
+    void Resume() {
+        Acquire();
+        ProtectAndDrain();
+    }
+
+    // 增加当前 Epoch
+    long BumpCurrentEpoch() {
+        assert(ThisInstanceProtected());
+        long nextEpoch = current_epoch_.fetch_add(1) + 1;
+
+        if (drain_count_ > 0) {
+            Drain(nextEpoch);
         }
 
-        // Size of cache line in bytes
-        const int kCacheLineBytes = 64;
-        // Default invalid index entry.
-        const int kInvalidIndex = 0;
-        // Epoch 表的默认大小，取 128 和当前系统处理器核心数两倍中的较大值，以适应不同的并发场景
-        static readonly ushort kTableSize = Math.Max((ushort)128, (ushort)(Environment.ProcessorCount * 2));
-        // 定义 drain 列表的大小为 16，该列表用于存储需要在某个 Epoch 变为安全可回收时执行的操作
-        const int kDrainListSize = 16;
+        return nextEpoch;
+    }
 
-        // 表示 epoch 表中的一个条目
-        [StructLayout(LayoutKind.Explicit, Size = kCacheLineBytes)]
-        struct Entry
-        {
-            /// Thread-local value of epoch
-            [FieldOffset(0)]
-            public long localCurrentEpoch;
+    // 增加当前 Epoch 并关联操作
+    void BumpCurrentEpoch(const std::function<void()>& onDrain) {
+        long priorEpoch = BumpCurrentEpoch() - 1;
 
-            /// ID of thread associated with this entry.
-            [FieldOffset(8)]
-            public int threadId;
-
-            [FieldOffset(12)]
-            public int reentrant;
-
-            [FieldOffset(16)]
-            public fixed long markers[6];
-        }
-
-        // 用于存储与 epoch 相关联的动作，以便在 epoch 变为安全时执行
-        struct EpochActionPair
-        {
-            public long epoch;
-            public Action action;
-        }
-
-        // tableRaw是原始的 Epoch 表数组，tableAligned是经过缓存行对齐后的指针，用于更高效的内存访问
-        readonly Entry[] tableRaw;
-        readonly Entry* tableAligned;
-
-#if !NET5_0_OR_GREATER
-        GCHandle tableHandle;
-#endif
-        // threadIndex是用于存储线程索引的数组，threadIndexAligned是对齐后的指针
-        static readonly Entry[] threadIndex;
-        static readonly Entry* threadIndexAligned;
-#if !NET5_0_OR_GREATER
-        static GCHandle threadIndexHandle;
-#endif
-
-        // 存储EpochActionPair结构体的数组，每个结构体包含一个 Epoch 值和一个对应的操作
-        volatile int drainCount = 0;
-        readonly EpochActionPair[] drainList = new EpochActionPair[kDrainListSize];
-
-        // 全局当前的 Epoch 值
-        long CurrentEpoch;
-
-        // 缓存当前安全可回收的 Epoch 值
-        long SafeToReclaimEpoch;
-
-        // Static constructor to setup shared cache-aligned space to store per-entry count of instances using that entry
-        static LightEpoch() { …… }
-
-        // Instantiate the epoch table
-        public LightEpoch()
-        {
-            long p;
-
-            // 在.NET 5.0及以上版本，使用GC.AllocateArray分配数组并获取指针；在旧版本中，通过GCHandle.Alloc进行内存分配和指针获取
-#if NET5_0_OR_GREATER
-            tableRaw = GC.AllocateArray<Entry>(kTableSize + 2, true);
-            p = (long)Unsafe.AsPointer(ref tableRaw[0]);
-#else
-            // Over-allocate to do cache-line alignment
-            tableRaw = new Entry[kTableSize + 2];
-            tableHandle = GCHandle.Alloc(tableRaw, GCHandleType.Pinned);
-            p = (long)tableHandle.AddrOfPinnedObject();
-#endif
-            // Force the pointer to align to 64-byte boundaries
-            long p2 = (p + (kCacheLineBytes - 1)) & ~(kCacheLineBytes - 1);
-            tableAligned = (Entry*)p2;
-
-            CurrentEpoch = 1;
-            SafeToReclaimEpoch = 0;
-
-            // Mark all epoch table entries as "available"
-            for (int i = 0; i < kDrainListSize; i++)
-                drainList[i].epoch = long.MaxValue;
-            drainCount = 0;
-        }
-
-        // 用于清理 Epoch 表资源
-        public void Dispose() { …… }
-
-        // 检查当前线程是否已进入受保护的代码区域，通过判断线程在 Epoch 表中的条目状态来确定
-        public bool ThisInstanceProtected()
-        {
-            int entry = Metadata.threadEntryIndex;
-            if (kInvalidIndex != entry)
-            {
-                if ((*(tableAligned + entry)).threadId == entry)
-                    return true;
-            }
-            return false;
-        }
-
-        /// <summary>
-        /// Enter the thread into the protected code region
-        /// </summary>
-        /// <returns>Current epoch</returns>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void ProtectAndDrain()
-        {
-            int entry = Metadata.threadEntryIndex;
-
-            // Protect CurrentEpoch by making an entry for it in the non-static epoch table so ComputeNewSafeToReclaimEpoch() will see it.
-            (*(tableAligned + entry)).threadId = Metadata.threadEntryIndex;
-            (*(tableAligned + entry)).localCurrentEpoch = CurrentEpoch;
-
-            if (drainCount > 0)
-            {
-                Drain((*(tableAligned + entry)).localCurrentEpoch);
-            }
-        }
-
-        /// <summary>
-        /// Thread suspends its epoch entry
-        /// </summary>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void Suspend()
-        {
-            Release();
-            if (drainCount > 0) SuspendDrain();
-        }
-
-        /// <summary>
-        /// Thread resumes its epoch entry
-        /// </summary>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void Resume()
-        {
-            Acquire();
-            ProtectAndDrain();
-        }
-
-        /// <summary>
-        /// Increment global current epoch
-        /// </summary>
-        /// <returns></returns>
-        long BumpCurrentEpoch()
-        {
-            Debug.Assert(this.ThisInstanceProtected(), "BumpCurrentEpoch must be called on a protected thread");
-            long nextEpoch = Interlocked.Increment(ref CurrentEpoch);
-
-            if (drainCount > 0)
-                Drain(nextEpoch);
-
-            return nextEpoch;
-        }
-
-        /// <summary>
-        /// Increment current epoch and associate trigger action
-        /// with the prior epoch
-        /// </summary>
-        /// <param name="onDrain">Trigger action</param>
-        /// <returns></returns>
-        public void BumpCurrentEpoch(Action onDrain)
-        {
-            long PriorEpoch = BumpCurrentEpoch() - 1;
-
-            int i = 0;
-            while (true)
-            {
-                if (drainList[i].epoch == long.MaxValue)
-                {
-                    // This was an empty slot. If it still is, assign this action/epoch to the slot.
-                    if (Interlocked.CompareExchange(ref drainList[i].epoch, long.MaxValue - 1, long.MaxValue) == long.MaxValue)
-                    {
-                        drainList[i].action = onDrain;
-                        drainList[i].epoch = PriorEpoch;
-                        Interlocked.Increment(ref drainCount);
+        int i = 0;
+        while (true) {
+            if (drain_list_[i].epoch == std::numeric_limits<long>::max()) {
+                auto expect = std::numeric_limits<long>::max();
+                if (drain_list_[i].epoch.compare_exchange_strong(expect, std::numeric_limits<long>::max() - 1)) {
+                    drain_list_[i].action = onDrain;
+                    drain_list_[i].epoch = priorEpoch;
+                    ++drain_count_;
+                    break;
+                }
+            } else {
+                long triggerEpoch = drain_list_[i].epoch;
+                if (triggerEpoch <= safe_to_reclaim_epoch_.load()) {
+                    if (drain_list_[i].epoch.compare_exchange_strong(triggerEpoch, std::numeric_limits<long>::max() - 1)) {
+                        auto triggerAction = drain_list_[i].action;
+                        drain_list_[i].action = onDrain;
+                        drain_list_[i].epoch = priorEpoch;
+                        triggerAction();
                         break;
                     }
                 }
-                else
-                {
-                    var triggerEpoch = drainList[i].epoch;
-
-                    if (triggerEpoch <= SafeToReclaimEpoch)
-                    {
-                        // This was a slot with an epoch that was safe to reclaim. If it still is, execute its trigger, then assign this action/epoch to the slot.
-                        if (Interlocked.CompareExchange(ref drainList[i].epoch, long.MaxValue - 1, triggerEpoch) == triggerEpoch)
-                        {
-                            var triggerAction = drainList[i].action;
-                            drainList[i].action = onDrain;
-                            drainList[i].epoch = PriorEpoch;
-                            triggerAction();
-                            break;
-                        }
-                    }
-                }
-
-                if (++i == kDrainListSize)
-                {
-                    // We are at the end of the drain list and found no empty or reclaimable slot. ProtectAndDrain, which should clear one or more slots.
-                    ProtectAndDrain();
-                    i = 0;
-                    Thread.Yield();
-                }
             }
 
-            // Now ProtectAndDrain, which may execute the action we just added.
-            ProtectAndDrain();
+            if (++i == kDrainListSize) {
+                ProtectAndDrain();
+                i = 0;
+                std::this_thread::yield();
+            }
         }
 
-        /// <summary>
-        /// Mechanism for threads to mark some activity as completed until
-        /// some version by this thread
-        /// </summary>
-        /// <param name="markerIdx">ID of activity</param>
-        /// <param name="version">Version</param>
-        /// <returns></returns>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void Mark(int markerIdx, long version)
-        {
-            Debug.Assert(markerIdx < 6);
-            (*(tableAligned + Metadata.threadEntryIndex)).markers[markerIdx] = version;
-        }
+        ProtectAndDrain();
+    }
 
-        /// <summary>
-        /// Check if all active threads have completed the some
-        /// activity until given version.
-        /// </summary>
-        /// <param name="markerIdx">ID of activity</param>
-        /// <param name="version">Version</param>
-        /// <returns>Whether complete</returns>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public bool CheckIsComplete(int markerIdx, long version)
-        {
-            Debug.Assert(markerIdx < 6);
+    // 标记某个线程的特定活动已完成到指定版本
+    void Mark(int markerIdx, long version) {
+        assert(markerIdx < 6);
+        table_[Metadata::thread_entry_index].markers[markerIdx] = version;
+    }
 
-            // check if all threads have reported complete
-            for (int index = 1; index <= kTableSize; ++index)
-            {
-                long entry_epoch = (*(tableAligned + index)).localCurrentEpoch;
-                long fc_version = (*(tableAligned + index)).markers[markerIdx];
-                if (0 != entry_epoch)
-                {
-                    if ((fc_version != version) && (entry_epoch < long.MaxValue))
-                    {
-                        return false;
-                    }
+    // 所有活动线程是否都已完成到指定版本
+    bool CheckIsComplete(int markerIdx, long version) const {
+        assert(markerIdx < 6);
+        for (int index = 1; index <= kTableSize; ++index) {
+            long entry_epoch = table_[index].local_current_epoch.load();
+            long fc_version = table_[index].markers[markerIdx];
+            if (entry_epoch != 0) {
+                if ((fc_version != version) && (entry_epoch < std::numeric_limits<long>::max())) {
+                    return false;
                 }
             }
-            return true;
         }
+        return true;
+    }
 
-        /// <summary>
-        /// Looks at all threads and return the latest safe epoch
-        /// </summary>
-        /// <param name="currentEpoch">Current epoch</param>
-        /// <returns>Safe epoch</returns>
-        long ComputeNewSafeToReclaimEpoch(long currentEpoch)
-        {
-            long oldestOngoingCall = currentEpoch;
-
-            for (int index = 1; index <= kTableSize; ++index)
-            {
-                long entry_epoch = (*(tableAligned + index)).localCurrentEpoch;
-                if (0 != entry_epoch)
-                {
-                    if (entry_epoch < oldestOngoingCall)
-                    {
-                        oldestOngoingCall = entry_epoch;
-                    }
+    // 计算新的安全可回收 Epoch
+    long ComputeNewSafeToReclaimEpoch(long currentEpoch) {
+        long oldestOngoingCall = currentEpoch;
+        for (int index = 1; index <= kTableSize; ++index) {
+            long entry_epoch = table_[index].local_current_epoch.load();
+            if (entry_epoch != 0) {
+                if (entry_epoch < oldestOngoingCall) {
+                    oldestOngoingCall = entry_epoch;
                 }
             }
-
-            // The latest safe epoch is the one just before the earliest unsafe epoch.
-            SafeToReclaimEpoch = oldestOngoingCall - 1;
-            return SafeToReclaimEpoch;
         }
+        safe_to_reclaim_epoch_ = oldestOngoingCall - 1;
+        return safe_to_reclaim_epoch_.load();
+    }
 
-        /// <summary>
-        /// Take care of pending drains after epoch suspend
-        /// </summary>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        void SuspendDrain()
-        {
-            while (drainCount > 0)
-            {
-                // Barrier ensures we see the latest epoch table entries. Ensures
-                // that the last suspended thread drains all pending actions.
-                Thread.MemoryBarrier();
-                for (int index = 1; index <= kTableSize; ++index)
-                {
-                    long entry_epoch = (*(tableAligned + index)).localCurrentEpoch;
-                    if (0 != entry_epoch)
-                    {
-                        return;
-                    }
+    // 在线程暂停时处理 Drain 列表中的操作，确保在所有线程都暂停后执行这些操作
+    void SuspendDrain() {
+        while (drain_count_ > 0) {
+            std::atomic_thread_fence(std::memory_order_seq_cst);
+            bool allSuspended = true;
+            for (int index = 1; index <= kTableSize; ++index) {
+                long entry_epoch = table_[index].local_current_epoch.load();
+                if (entry_epoch != 0) {
+                    allSuspended = false;
+                    break;
                 }
+            }
+            if (allSuspended) {
                 Resume();
                 Release();
             }
         }
+    }
 
-        /// <summary>
-        /// Check and invoke trigger actions that are ready
-        /// </summary>
-        /// <param name="nextEpoch">Next epoch</param>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        void Drain(long nextEpoch)
-        {
-            ComputeNewSafeToReclaimEpoch(nextEpoch);
-
-            for (int i = 0; i < kDrainListSize; i++)
-            {
-                var trigger_epoch = drainList[i].epoch;
-
-                if (trigger_epoch <= SafeToReclaimEpoch)
-                {
-                    if (Interlocked.CompareExchange(ref drainList[i].epoch, long.MaxValue - 1, trigger_epoch) == trigger_epoch)
-                    {
-                        // Store off the trigger action, then set epoch to int.MaxValue to mark this slot as "available for use".
-                        var trigger_action = drainList[i].action;
-                        drainList[i].action = null;
-                        drainList[i].epoch = long.MaxValue;
-                        Interlocked.Decrement(ref drainCount);
-
-                        // Execute the action
-                        trigger_action();
-                        if (drainCount == 0) break;
+    // 处理 drain 列表
+    void Drain(long nextEpoch) {
+        ComputeNewSafeToReclaimEpoch(nextEpoch);
+        for (int i = 0; i < kDrainListSize; ++i) {
+            long triggerEpoch = drain_list_[i].epoch;
+            if (triggerEpoch <= safe_to_reclaim_epoch_.load()) {
+                if (std::atomic_compare_exchange_strong(&drain_list_[i].epoch, &triggerEpoch, std::numeric_limits<long>::max() - 1)) {
+                    auto triggerAction = drain_list_[i].action;
+                    drain_list_[i].action = nullptr;
+                    drain_list_[i].epoch = std::numeric_limits<long>::max();
+                    --drain_count_;
+                    triggerAction();
+                    if (drain_count_ == 0) {
+                        break;
                     }
                 }
             }
         }
+    }
 
-        /// <summary>
-        /// Thread acquires its epoch entry
-        /// </summary>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        void Acquire()
-        {
-            if (Metadata.threadEntryIndex == kInvalidIndex)
-                Metadata.threadEntryIndex = ReserveEntryForThread();
-
-            Debug.Assert((*(tableAligned + Metadata.threadEntryIndex)).localCurrentEpoch == 0,
-                "Trying to acquire protected epoch. Make sure you do not re-enter FASTER from callbacks or IDevice implementations. If using tasks, use TaskCreationOptions.RunContinuationsAsynchronously.");
-
-            // This corresponds to AnyInstanceProtected(). We do not mark "ThisInstanceProtected" until ProtectAndDrain().
-            Metadata.threadEntryIndexCount++;
+    // 获取条目
+    void Acquire() {
+        if (Metadata::thread_entry_index == kInvalidIndex) {
+            Metadata::thread_entry_index = ReserveEntryForThread();
         }
+        assert(table_[Metadata::thread_entry_index].local_current_epoch.load() == 0 );
+        ++Metadata::thread_entry_index_count;
+    }
 
-        /// <summary>
-        /// Thread releases its epoch entry
-        /// </summary>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        void Release()
-        {
-            int entry = Metadata.threadEntryIndex;
-
-            Debug.Assert((*(tableAligned + entry)).localCurrentEpoch != 0,
-                "Trying to release unprotected epoch. Make sure you do not re-enter FASTER from callbacks or IDevice implementations. If using tasks, use TaskCreationOptions.RunContinuationsAsynchronously.");
-
-            // Clear "ThisInstanceProtected()" (non-static epoch table)
-            (*(tableAligned + entry)).localCurrentEpoch = 0;
-            (*(tableAligned + entry)).threadId = 0;
-
-            // Decrement "AnyInstanceProtected()" (static thread table)
-            Metadata.threadEntryIndexCount--;
-            if (Metadata.threadEntryIndexCount == 0)
-            {
-                (threadIndexAligned + Metadata.threadEntryIndex)->threadId = 0;
-                Metadata.threadEntryIndex = kInvalidIndex;
-            }
-        }
-
-        // 在 Epoch 表中为线程预留一个条目，通过自旋和尝试获取空闲槽位来实现
-        static int ReserveEntry()
-        {
-            while (true)
-            {
-                // Try to acquire entry
-                if (0 == (threadIndexAligned + Metadata.startOffset1)->threadId)
-                {
-                    if (0 == Interlocked.CompareExchange(
-                        ref (threadIndexAligned + Metadata.startOffset1)->threadId,
-                        Metadata.threadId, 0))
-                        return Metadata.startOffset1;
-                }
-
-                if (Metadata.startOffset2 > 0)
-                {
-                    // Try alternate entry
-                    Metadata.startOffset1 = Metadata.startOffset2;
-                    Metadata.startOffset2 = 0;
-                }
-                else Metadata.startOffset1++; // Probe next sequential entry
-                if (Metadata.startOffset1 > kTableSize)
-                {
-                    Metadata.startOffset1 -= kTableSize;
-                    Thread.Yield();
-                }
-            }
-        }
-
-        static int Murmur3(int h) { …… }
-
-        // 该方法为线程分配一个新的 epoch 表条目。它使用线程 ID 的 Murmur3 哈希计算初始偏移量，并通过探查找到可用条目
-        static int ReserveEntryForThread()
-        {
-            if (Metadata.threadId == 0) // run once per thread for performance
-            {
-                Metadata.threadId = Environment.CurrentManagedThreadId;
-                uint code = (uint)Murmur3(Metadata.threadId);
-                Metadata.startOffset1 = (ushort)(1 + (code % kTableSize));
-                Metadata.startOffset2 = (ushort)(1 + ((code >> 16) % kTableSize));
-            }
-            return ReserveEntry();
+    // 释放条目
+    void Release() {
+        int entry = Metadata::thread_entry_index;
+        assert(table_[entry].local_current_epoch.load() != 0);
+        table_[entry].local_current_epoch.store(0);
+        table_[entry].thread_id.store(0);
+        --Metadata::thread_entry_index_count;
+        if (Metadata::thread_entry_index_count == 0) {
+            thread_index_[Metadata::thread_entry_index].thread_id.store(0);
+            Metadata::thread_entry_index = kInvalidIndex;
         }
     }
-}
+
+    // 预留条目
+    int ReserveEntry() {
+        while (true) {
+            if (thread_index_[Metadata::start_offset1].thread_id.load() == 0) {
+                auto expect = 0;
+                if (thread_index_[Metadata::start_offset1].thread_id.compare_exchange_strong(expect, Metadata::thread_id)) {
+                    return Metadata::start_offset1;
+                }
+            }
+            if (Metadata::start_offset2 > 0) {
+                Metadata::start_offset1 = Metadata::start_offset2;
+                Metadata::start_offset2 = 0;
+            } else {
+                ++Metadata::start_offset1;
+            }
+            if (Metadata::start_offset1 > kTableSize) {
+                Metadata::start_offset1 -= kTableSize;
+                std::this_thread::yield();
+            }
+        }
+    }
+
+    // 32 位 Murmur3 哈希函数
+    int Murmur3(int h) {
+        uint32_t a = static_cast<uint32_t>(h);
+        a ^= a >> 16;
+        a *= 0x85ebca6b;
+        a ^= a >> 13;
+        a *= 0xc2b2ae35;
+        a ^= a >> 16;
+        return static_cast<int>(a);
+    }
+
+    // 为线程预留条目
+    int ReserveEntryForThread() {
+        if (Metadata::thread_id == 0) {
+            Metadata::thread_id = static_cast<int>(std::hash<std::thread::id>()(std::this_thread::get_id()));
+            uint32_t code = static_cast<uint32_t>(Murmur3(Metadata::thread_id));
+            Metadata::start_offset1 = 1 + (code % kTableSize);
+            Metadata::start_offset2 = 1 + ((code >> 16) % kTableSize);
+        }
+        return ReserveEntry();
+    }
+
+    Entry* table_{nullptr};
+    Entry* thread_index_{nullptr};
+    std::atomic<int> drain_count_;
+    EpochAction drain_list_[kDrainListSize];
+    std::atomic<long> current_epoch_;
+    std::atomic<long> safe_to_reclaim_epoch_;
+};
+```
+
+线程保护与 Epoch 操作流程
+
+```mermaid
+graph TD
+    A["线程调用 Resume()"] --> B["Acquire()"]
+    B --> C{是否首次获取?}
+    C -->|是| D["ReserveEntryForThread()"]
+    D --> E[计算start_offset1/2 via Murmur3哈希]
+    E --> F["调用 ReserveEntry()" 寻找可用槽位]
+    F --> G[CAS操作获取thread_index_中的槽位]
+    C -->|否| H[直接使用已有thread_entry_index]
+    A --> I["ProtectAndDrain()"]
+    I --> J[更新table_中当前线程的thread_id和local_current_epoch]
+    I --> K{drain_count_ > 0?}
+    K -->|是| L["Drain(current_epoch_)"]
+    L --> M["ComputeNewSafeToReclaimEpoch(nextEpoch)"]
+    M --> N[遍历drain_list_执行到期的action]
+    
+    O["线程调用 BumpCurrentEpoch()"] --> P["ASSERT: ThisInstanceProtected()"]
+    P --> Q["current_epoch_.fetch_add(1)"]
+    Q --> R{Drain操作触发}
+    R --> S["调用 Drain(nextEpoch)"]
+    
+    T["线程调用 Suspend()"] --> U["Release()"]
+    U --> V[清除table_中的线程状态]
+    T --> W{drain_count_ > 0?}
+    W -->|是| X["SuspendDrain()" 检查所有线程是否暂停]
+    X --> Y[循环直到所有线程local_current_epoch为0]
+```
+
+Drain 列表处理逻辑
+
+```mermaid
+graph LR
+    A[BumpCurrentEpoch触发Drain] --> B[ComputeNewSafeToReclaimEpoch]
+    B --> C[遍历drain_list_]
+    C --> D{"triggerEpoch <= safe_to_reclaim_epoch_?"}
+    D -->|是| E[CAS更新epoch为MAX-1]
+    E --> F[执行action并重置槽位]
+    D -->|否| G[跳过当前槽位]
+    H[槽位满时] --> I["调用ProtectAndDrain() 处理旧epoch"]
+```
+
+关键数据结构关系
+
+```mermaid
+graph TD
+    LightEpoch -->|管理| table_[Entry]
+    LightEpoch -->|管理| thread_index_[Entry]
+    LightEpoch -->|管理| drain_list_[EpochAction]
+    Metadata -->|指向| thread_index_[Entry]
+    Entry -->|存储| local_current_epoch
+    Entry -->|存储| thread_id
+    EpochAction -->|关联| epoch
+    EpochAction -->|关联| action
+```
+
+线程`Metadata`布局
+
+```shell
+每个线程独立存储:
+Metadata
+├─ thread_id (4字节, int)
+├─ start_offset1 (4字节, int)
+├─ start_offset2 (4字节, int)
+├─ thread_entry_index (4字节, int)  // 指向table_中的槽位索引
+└─ thread_entry_index_count (4字节, int)  // 重入计数
+```
+
+`LightEpoch`内存布局
+
+```shell
+LightEpoch
+├─ table_ (指针) -----------------------> [Entry[1..kTableSize+2]]  (缓存行对齐, 每个Entry 64字节)
+│   ├─ Entry[i]
+│   │   ├─ local_current_epoch (8字节, atomic<long>)
+│   │   ├─ thread_id (4字节, atomic<int>)
+│   │   ├─ reentrant (4字节, atomic<int>)
+│   │   ├─ markers[6] (48字节, long[6])  // 总64字节，满足kCacheLineBytes对齐
+│   └─ ...
+├─ thread_index_ (指针) -----------------> [Entry[1..kTableSize+2]]  (线程索引表, 同样对齐)
+├─ drain_list_ (EpochAction[kDrainListSize])
+│   ├─ EpochAction[i]
+│   │   ├─ epoch (8字节, atomic_long)
+│   │   ├─ action (函数指针, 8字节)
+│   └─ ...
+├─ drain_count_ (4字节, atomic<int>)
+├─ current_epoch_ (8字节, atomic<long>)
+└─ safe_to_reclaim_epoch_ (8字节, atomic<long>)
 ```
 
 ```c#
