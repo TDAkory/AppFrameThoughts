@@ -1,5 +1,9 @@
 # [Raft](https://zh.wikipedia.org/wiki/Raft)
 
+* [In Search of an Understandable Consensus Algorithm(Extended Version)](https://raft.github.io/raft.pdf)
+* [万字详解Raft一致性算法](https://zhuanlan.zhihu.com/p/522435604)
+* [Raft协议详解--背景+概念介绍+算法剖析](https://blog.csdn.net/tiancaidddddd/article/details/135995057)
+
 ## RaftLog
 
 RaftLog（日志）是 Raft 一致性算法的核心组件之一，用于记录分布式系统中各节点需要达成共识的**状态变更操作**，确保集群中所有节点的状态最终一致。以下从定义、核心作用、关键机制三方面展开说明：

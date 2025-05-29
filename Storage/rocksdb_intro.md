@@ -2,6 +2,7 @@
 
 > [github page](https://github.com/facebook/rocksdb)
 > [RocksDB Overview](https://github.com/facebook/rocksdb/wiki/RocksDB-Overview)
+> [RocksDB阻写](https://cloud.tencent.com/developer/article/1517019)
 
 ![rocksdb](https://raw.githubusercontent.com/TDAkory/ImageResources/master/img/AppFrameThoughts/rocksdb.jpg)
 
