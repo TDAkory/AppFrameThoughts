@@ -57,6 +57,83 @@ A timestamp is written alongside each value, and is the identifier for a given v
 
 ## Hbase Region Server
 
+HBase 是一个高性能、高可用、可扩展的分布式存储系统，它使用 Region Server 来管理数据。下面是 HBase Region Server 的组成：
+
+1. **Region Server**：
+   - 负责管理存储数据的基本单元，即 Region。Region 是 HBase 中数据分布和负载均衡的逻辑划分。
+   - 处理客户端的读写请求，并将这些请求转发到相应的 Region。
+
+2. **BlockCache（块缓存）**：
+   - 位于内存中，用于缓存从 HDFS（Hadoop Distributed File System）读取的数据块（Block）。
+   - 减少从磁盘读取数据的次数，从而降低读取成本，提高读取性能。
+
+3. **WAL（Write-Ahead Log）**：
+   - 是一种日志文件，记录了所有对数据的修改操作。
+   - 确保数据的持久性和一致性。在数据写入 MemStore 之前，先写入 WAL，以便在系统故障时能够恢复数据。
+
+4. **MemStore（内存存储）**：
+   - 在内存中维护的有序数据集合，每个 Column Family 会有一个 MemStore。
+   - 存储最近写入或修改的数据。当 MemStore 达到一定大小时，数据会刷新到 HFile。
+
+5. **HFile（Hadoop文件）**：
+   - 维护在 HDFS 上的数据文件，内部有序存储。
+   - 当 MemStore 中的数据积累到一定程度后，会批量写入 HFile，以减少写操作的频率，提高写性能。
+
+6. **StoreFile（存储文件）**：
+   - 由多个 HFile 组成，每个 StoreFile 对应一个 Column Family。
+   - 存储实际的数据，包括 MemStore 中的数据和 WAL 日志中的数据。
+
+7. **Compaction（压缩）**：
+   - 定期执行，以合并 MemStore 中的修改和 HFile 中的旧版本数据。
+   - 清理过时数据，优化存储空间的使用。
+
+8. **Flush（刷新）**：
+   - 将 MemStore 中的数据写入 HFile，通常在 MemStore 达到一定大小时触发。
+   - 确保内存中的数据持久化到磁盘。
+
+9. **Split（分裂）**：
+   - 当 Region 增长到一定大小时，会被分裂成两个新的 Region。
+   - 分裂是 HBase 负载均衡和扩展性的关键机制。
+
+10. **RPC（远程过程调用）**：
+    - Region Server 提供 RPC 服务，用于处理来自客户端和其他服务器节点的请求。
+    - 使用 HBase 的 RPC 框架，支持多种类型的远程调用。
+
 ## HFile文件格式
+
+```shell
++---------------------------------------------------------------+
+| "Scanned block" section                                     |
+| +-----------------------+ +-------------------------------+ |
+| | Data Block            | | Leaf index block / Bloom block  |
+| +-----------------------+ +-------------------------------+ |
+| ...                                ...                      |
+| +-----------------------+ +-------------------------------+ |
+| | Data Block            | | Leaf index block / Bloom block  |
+| +-----------------------+ +-------------------------------+ |
+| ...                                ...                      |
++---------------------------------------------------------------+
+| "Non-scanned block" section                     |
+| +-----------------------+ +-------------------+ |
+| | Meta block    | ... | Meta block  |
+| +-----------------------+ +-------------------+ |
+| Intermediate Level Data Index Blocks (optional) |
++---------------------------------------------------------------+
+| "Load-on-open" section                                         |
+| +------------------------------------------------------------+ |
+| | Root Data Index | Fields for midkey | Meta Index | File Info |
+| +------------------------------------------------------------+ |
+| | Bloom filter metadata (interpreted by StoreFile) |
++----------------------------------------------------------------+
+| Trailer                                              |
+| +-----------------------+ +------------------------+ |
+| | Trailer fields | Version         |
++----------------------------------------------------------------+
+```
+
+- Scanned block section：顾名思义，表示顺序扫描HFile时所有的数据块将会被读取，包括Leaf Index Block和Bloom Block。
+- Non-scanned block section：表示在HFile顺序扫描的时候数据不会被读取，主要包括Meta Block和Intermediate Level Data Index Blocks两部分。
+- Load-on-open-section：这部分数据在HBase的region server启动时，需要加载到内存中。包括FileInfo、Bloom filter block、data block index和meta block index。
+- Trailer：这部分主要记录了HFile的基本信息、各个部分的偏移值和寻址信息。
 
 ### flush过程
