@@ -20,3 +20,25 @@
 * 服务治理：客户端重试逻辑、限流、熔断
 * 可观测性
 
+## 通用数据库Proxy相关技术
+
+### 零拷贝
+
+* read + write（带DMA）
+* mmap + write
+* sendfile
+* splice
+* Userspace I/O
+
+### 负载均衡算法
+
+* 轮询（RR）Round-Robin
+* 加权轮询（WRR）Weighted-Round-Robin
+* 最少连接数（LC）Least-Connections
+* 加权最少连接数（WLC）Weighted-Least-Connections
+* 哈希算法 Hash
+* 一致性哈希 Consistent Hashing
+* 基于地理位置的GeoHash算法
+* 基于各种Server性能的动态指标反馈算法
+
+现实世界里，凡存在有状态分片的分布式服务，或者存在服务流量不同的服务（例如主从部署只能写主，希望读从），不仅限于数据库或存储产品组件，甚至是各类基于其实现的数据中间件服务，以及LocalCache型的RPC服务，都很有可能会提供功能相似的Proxy组件，而Proxy组件至少需要具备连接的管理、分片路由的管理与更新、元信息管理与心跳机制，以及一系列服务QoS的功能。
