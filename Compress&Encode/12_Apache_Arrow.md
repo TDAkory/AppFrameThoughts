@@ -1,5 +1,11 @@
 # [Apache Arrow](https://arrow.apache.org/docs/index.html)
 
+> https://arrow.apache.org/blog/2022/10/05/arrow-parquet-encoding-part-1/
+>
+> https://arrow.apache.org/blog/2022/10/08/arrow-parquet-encoding-part-2/
+> 
+> https://arrow.apache.org/blog/2022/10/17/arrow-parquet-encoding-part-3/
+
 Apache Arrow is a development platform for in-memory analytics. It contains a set of technologies that enable big data systems to process and move data fast. It specifies a standardized language-independent columnar memory format for flat and hierarchical data, organized for efficient analytic operations on modern hardware.
 
 This includes such topics as:
