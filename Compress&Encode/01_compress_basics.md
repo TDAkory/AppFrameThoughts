@@ -45,6 +45,9 @@
 ## Refs
 
 - [EE274数据压缩理论与应用 From Stanford](https://www.bilibili.com/video/BV1LyreYKEUD/?spm_id_from=333.337.search-card.all.click&vd_source=3b30eb8157301900ba82e04d7f8fa9d3)
+  - [EE274 Course site](https://stanforddatacompressionclass.github.io/Fall25/)
+  - [Github Page](https://github.com/StanfordDataCompressionClass)
+  - [Notes](https://stanforddatacompressionclass.github.io/notes/)
 
 - [数据流压缩原理（Deflate压缩算法、gzip、zlib）](https://blog.51cto.com/u_15346415/5026718)
 - [Zstandard Compression and the 'application/zstd' Media Type](https://datatracker.ietf.org/doc/html/rfc8878#name-entropy-encoding)
