@@ -1,0 +1,153 @@
+# Table of contents
+
+* [../ (MyNote)](../MyNoteINDEX.md)
+* [0-Theory]
+  * [0_theory.md](0-Theory/0_theory.md)
+  * [1_chaos_engineering.md](0-Theory/1_chaos_engineering.md)
+  * [2_takeaways_from_amazon_coe_review.md](0-Theory/2_takeaways_from_amazon_coe_review.md)
+  * [3_software_develop.md](0-Theory/3_software_develop.md)
+* [AFTREADME.md](AFTREADME.md)
+* [AI]
+  * [01_terminology_explanation.md](AI/01_terminology_explanation.md)
+  * [LLM]
+    * [00_learn_material.md](AI/LLM/00_learn_material.md)
+  * [ML]
+    * [datasets.md](AI/ML/datasets.md)
+    * [notes.md](AI/ML/notes.md)
+  * [paper.md](AI/paper.md)
+* [AccessControl](AccessControl/README.md)
+  * [README.md](AccessControl/README.md)
+  * [rate_limiter.md](AccessControl/rate_limiter.md)
+* [Article]
+  * [article_lists.md](Article/article_lists.md)
+* [BigData](BigData/README.md)
+  * [01_shared_nothing_shared_disk.md](BigData/01_shared_nothing_shared_disk.md)
+  * [02_streaming_process.md](BigData/02_streaming_process.md)
+  * [03_base_warhouse_lake.md](BigData/03_base_warhouse_lake.md)
+  * [README.md](BigData/README.md)
+* [CNCF]
+  * [Docker](CNCF/Docker/README.md)
+    * [README.md](CNCF/Docker/README.md)
+  * [Kubernetes](CNCF/Kubernetes/README.md)
+    * [Basic_Concepts.md](CNCF/Kubernetes/Basic_Concepts.md)
+    * [Basic_workload.md](CNCF/Kubernetes/Basic_workload.md)
+    * [HandBook]
+    * [README.md](CNCF/Kubernetes/README.md)
+    * [Things_about_scheduler.md](CNCF/Kubernetes/Things_about_scheduler.md)
+    * [helm.md](CNCF/Kubernetes/helm.md)
+  * [Understand_concept.md](CNCF/Understand_concept.md)
+  * [cloud_native_overall.md](CNCF/cloud_native_overall.md)
+  * [serverless]
+    * [talk_about_serverless.md](CNCF/serverless/talk_about_serverless.md)
+* [Cache]
+  * [articles.md](Cache/articles.md)
+  * [read_write_schema.md](Cache/read_write_schema.md)
+  * [recovery.md](Cache/recovery.md)
+* [Compress&Encode]
+  * [01_compress_basics.md](Compress&Encode/01_compress_basics.md)
+  * [02_prefix_free_code.md](Compress&Encode/02_prefix_free_code.md)
+  * [03_huffman_code.md](Compress&Encode/03_huffman_code.md)
+  * [101_improving_time_series_data_compression_in_apache_iotdb.md](Compress&Encode/101_improving_time_series_data_compression_in_apache_iotdb.md)
+  * [102_Things_about_FastLanes.md](Compress&Encode/102_Things_about_FastLanes.md)
+  * [11_data_encode_basics.md](Compress&Encode/11_data_encode_basics.md)
+  * [12_Apache_Arrow.md](Compress&Encode/12_Apache_Arrow.md)
+  * [13_msgpack.md](Compress&Encode/13_msgpack.md)
+  * [14_FlatBuffers.md](Compress&Encode/14_FlatBuffers.md)
+* [Computer]
+  * [011_numa_concept.md](Computer/011_numa_concept.md)
+  * [01_Process_Arch.md](Computer/01_Process_Arch.md)
+  * [02_CPU_GPU_DPU.md](Computer/02_CPU_GPU_DPU.md)
+  * [03_SIMD.md](Computer/03_SIMD.md)
+  * [04_Intel_QAT.md](Computer/04_Intel_QAT.md)
+  * [05_PMEM.md](Computer/05_PMEM.md)
+  * [index.md](Computer/index.md)
+* [Concurrency]
+  * [Things_about_epoch_protection.md](Concurrency/Things_about_epoch_protection.md)
+  * [articles.md](Concurrency/articles.md)
+* [Consensus]
+  * [Raft]
+    * [raft.md](Consensus/Raft/raft.md)
+    * [sofa_jraft.md](Consensus/Raft/sofa_jraft.md)
+    * [sofa_jraft_local_snapshot.md](Consensus/Raft/sofa_jraft_local_snapshot.md)
+* [DistributeSystem]
+  * [Consensus_Algorithm.md](DistributeSystem/Consensus_Algorithm.md)
+  * [vector_clock.md](DistributeSystem/vector_clock.md)
+  * [zookeeper.md](DistributeSystem/zookeeper.md)
+* [MQ]
+  * [01_basic_concept.md](MQ/01_basic_concept.md)
+* [Observability]
+  * [ReadList.md](Observability/ReadList.md)
+  * [TSDB]
+    * [IoTDB.md](Observability/TSDB/IoTDB.md)
+    * [file_format_compare.md](Observability/TSDB/file_format_compare.md)
+  * [WideEvent]
+    * [wide_event.md](Observability/WideEvent/wide_event.md)
+  * [four_golden_signals.md](Observability/four_golden_signals.md)
+  * [log]
+    * [log.md](Observability/log/log.md)
+    * [logtail.md](Observability/log/logtail.md)
+  * [metric]
+    * [InfluxDB.md](Observability/metric/InfluxDB.md)
+    * [Monarch.md](Observability/metric/Monarch.md)
+    * [Telegraf.md](Observability/metric/Telegraf.md)
+    * [metrics.md](Observability/metric/metrics.md)
+    * [prometheus](Observability/metric/prometheus/README.md)
+  * [opencensus.md](Observability/opencensus.md)
+  * [opentelemetry.md](Observability/opentelemetry.md)
+  * [trace](Observability/trace/README.md)
+    * [01_general.md](Observability/trace/01_general.md)
+    * [README.md](Observability/trace/README.md)
+    * [jaeger](Observability/trace/jaeger/README.md)
+    * [opentracing.md](Observability/trace/opentracing.md)
+* [QueryAndSearch]
+  * [01_basic_knowledges.md](QueryAndSearch/01_basic_knowledges.md)
+  * [query_and_search.md](QueryAndSearch/query_and_search.md)
+* [RPC]
+  * [01_thrift_general.md](RPC/01_thrift_general.md)
+  * [02_io_model_of_thrift.md](RPC/02_io_model_of_thrift.md)
+* [SoftSkills]
+  * [SysArchDesignExam]
+    * [00_books.md](SoftSkills/SysArchDesignExam/00_books.md)
+    * [01_one_page_note.md](SoftSkills/SysArchDesignExam/01_one_page_note.md)
+    * [01_one_page_note.pdf](SoftSkills/SysArchDesignExam/01_one_page_note.pdf)
+    * [10_resources_online.md](SoftSkills/SysArchDesignExam/10_resources_online.md)
+  * [some_best_practices.md](SoftSkills/some_best_practices.md)
+* [Storage]
+  * [DiveInto]
+    * [diff_tos_hdfs.md](Storage/DiveInto/diff_tos_hdfs.md)
+  * [General_Tech]
+    * [00_db_read_list.md](Storage/General_Tech/00_db_read_list.md)
+    * [01_storage_engine_general.md](Storage/General_Tech/01_storage_engine_general.md)
+    * [02_storage_engine_data_structure.md](Storage/General_Tech/02_storage_engine_data_structure.md)
+    * [03_transaction_and_isolation.md](Storage/General_Tech/03_transaction_and_isolation.md)
+    * [10_why_proxy.md](Storage/General_Tech/10_why_proxy.md)
+    * [21_String_in_tsdb.md](Storage/General_Tech/21_String_in_tsdb.md)
+    * [EC.md](Storage/General_Tech/EC.md)
+    * [LSM.md](Storage/General_Tech/LSM.md)
+  * [bitcask_intro.md](Storage/bitcask_intro.md)
+  * [clickhouse_intro.md](Storage/clickhouse_intro.md)
+  * [fasterkv_intro.md](Storage/fasterkv_intro.md)
+  * [fluss_intro.md](Storage/fluss_intro.md)
+  * [graphite_intro.md](Storage/graphite_intro.md)
+  * [hbase_intro.md](Storage/hbase_intro.md)
+  * [hdfs_intro.md](Storage/hdfs_intro.md)
+  * [influx_intro.md](Storage/influx_intro.md)
+  * [influxdb_1.x.md](Storage/influxdb_1.x.md)
+  * [influxdb_2.x.md](Storage/influxdb_2.x.md)
+  * [influxdb_3.md](Storage/influxdb_3.md)
+  * [innodb_intro.md](Storage/innodb_intro.md)
+  * [lindorm_intro.md](Storage/lindorm_intro.md)
+  * [redis_intro.md](Storage/redis_intro.md)
+  * [rocksdb_intro.md](Storage/rocksdb_intro.md)
+  * [vicmetrics_intro.md](Storage/vicmetrics_intro.md)
+  * [wiredtiger_intro.md](Storage/wiredtiger_intro.md)
+* [VectorSearch]
+  * [01_intro.md](VectorSearch/01_intro.md)
+  * [vector_search_index.md](VectorSearch/vector_search_index.md)
+* [Web]
+  * [HTTP.md](Web/HTTP.md)
+  * [QUIC.md](Web/QUIC.md)
+  * [SSL_TLS_HTTPS.md](Web/SSL_TLS_HTTPS.md)
+  * [wasm.md](Web/wasm.md)
+  * [yaml.md](Web/yaml.md)
+* [build_self_blog.md](build_self_blog.md)
