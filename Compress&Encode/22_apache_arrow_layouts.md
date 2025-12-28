@@ -1,15 +1,12 @@
+# [`Apache Arrow` Layouts](https://arrow.apache.org/docs/format/Intro.html)
 
-### 前置定义：Arrow 官方核心基础结构
-先定义 Arrow 官方最基础的类型枚举、Buffer、Field、Array 基类，完全对齐 `arrow/array/array.h` `arrow/buffer.h` 的核心结构：
+本文结合 [Apache Arrow Specifications](https://arrow.apache.org/docs/format/Intro.html) 和 [源代码](https://github.com/apache/arrow/tree/main/cpp/src/arrow)。记录 `Apache Arrow` 提供的数据类型，以及这些类型对应的内存分布。
+
+### 前置定义：`Arrow`的基础结构
+
+`Arrow` 最基础的类型枚举、`Buffer`、`Field`、`Array` 基类
+
 ```cpp
-#include <cstdint>
-#include <vector>
-#include <memory>
-#include <string>
-#include <optional>
-#include <stdexcept>
-
-// 对齐官方：Arrow 数据类型枚举（仅保留核心类型）
 // 参考：arrow/type.h
 enum class TypeID {
   // 固定大小Primitive
@@ -35,70 +32,49 @@ enum class TypeID {
   RUN_END_ENCODED
 };
 
-// 对齐官方：Arrow 连续内存缓冲器（Buffer）
-// 官方要点：
-// 1. 只读语义：构建后不修改，零拷贝共享的核心
+// Arrow 连续内存缓冲器（Buffer）
+// 1. 通常具有只读语义：构建后不修改，零拷贝共享的核心
 // 2. 内存由 MemoryPool 管理（伪代码简化为 raw 指针）
 // 3. 支持空缓冲器（data=nullptr, size=0）
 // 参考：arrow/buffer.h
-struct Buffer {
-  const uint8_t* data;    // 缓冲器起始地址（const 保证只读）
-  int64_t size;           // 缓冲器字节长度（负数非法）
-
-  // 官方辅助方法：类型安全解析缓冲器数据
-  template <typename T>
-  const T* As() const {
-    if (size % sizeof(T) != 0) {
-      throw std::invalid_argument("Buffer size not aligned with type");
-    }
-    return reinterpret_cast<const T*>(data);
-  }
-
-  // 官方约束：空缓冲器判断
-  bool IsEmpty() const { return data == nullptr || size == 0; }
+class Buffer {
+  bool is_mutable_;
+  bool is_cpu_;
+  const uint8_t* data_;
+  int64_t size_;
+  int64_t capacity_;
 };
 
-// 对齐官方：字段元信息（Field）
-// 官方要点：描述 Struct/Map/Union 的字段属性
-// 参考：arrow/type.h
-struct Field {
-  std::string name;       // 字段名（可选，可为空）
-  TypeID type;            // 字段数据类型
-  bool nullable;          // 是否允许 Null 值
-  std::shared_ptr<Buffer> metadata; // 扩展元数据（可选）
-};
-
-// 对齐官方：Arrow 一维数组基类（Array）
-// 官方要点：
+// Arrow 一维数组基类（Array）
 // 1. 所有具体数组类型的父类，统一抽象长度、Null 管理
 // 2. null_bitmap 为空时表示无 Null 值（null_count=0）
 // 3. 核心属性：length（元素数）、null_count（Null 数）、null_bitmap（有效性位图）
-// 参考：arrow/array/array.h
-struct Array {
-  TypeID type_id;         // 数组数据类型
-  int64_t length;         // 数组总元素数
-  int64_t null_count;     // Null 值数量（-1 表示未计算）
-  std::shared_ptr<Buffer> null_bitmap; // 有效性位图：1bit/元素，1=有效，0=Null
+// 参考：arrow/array.h arrow/array/data.h arrow/array/array_base.h
+class ArrayData{
+  std::shared_ptr<DataType> type;
+  int64_t length = 0;
+  mutable std::atomic<int64_t> null_count{0};
+  // The logical start point into the physical buffers (in values, not bytes).
+  // Note that, for child data, this must be *added* to the child data's own offset.
+  int64_t offset = 0;
+  std::vector<std::shared_ptr<Buffer>> buffers;
+  std::vector<std::shared_ptr<ArrayData>> child_data;
+  // The dictionary for this Array, if any. Only used for dictionary type
+  std::shared_ptr<ArrayData> dictionary;
+  // The statistics for this Array.
+  std::shared_ptr<ArrayStatistics> statistics;
+};
 
-  // 官方核心方法：判断指定索引是否为 Null
-  bool IsNull(int64_t idx) const {
-    if (idx < 0 || idx >= length) throw std::out_of_range("Index out of bounds");
-    if (null_bitmap->IsEmpty()) return false; // 无位图 → 无 Null
-    // 位图存储规则：字节序为小端，bit 0 对应第一个元素
-    const int64_t byte_idx = idx / 8;
-    const int64_t bit_idx = idx % 8;
-    return (null_bitmap->As<uint8_t>()[byte_idx] & (1 << bit_idx)) == 0;
-  }
-
-  // 虚析构：支持多态
-  virtual ~Array() = default;
+class Array {
+  std::shared_ptr<ArrayData> data_;
+  const uint8_t* null_bitmap_data_ = NULLPTR;
 };
 ```
 
 ### 1. 固定大小 Primitive 布局（Fixed Size Primitive）
 ```cpp
-// 对齐官方：固定大小 Primitive 数组
-// 官方要点：
+// 固定大小 Primitive 数组
+
 // 1. 元素字节长度固定（如 int32=4B，float64=8B，bool=1bit）
 // 2. bool 类型特殊：值以位存储（而非字节），单独处理
 // 3. values 缓冲器字节长度 = length * 元素字节数（bool 为 ceil(length/8)）
@@ -107,7 +83,7 @@ template <TypeID PrimitiveType>
 struct PrimitiveArray : public Array {
   std::shared_ptr<Buffer> values; // 值缓冲器：连续存储所有元素
 
-  // 元素字节长度（官方预定义）
+  // 元素字节长度（预定义）
   static constexpr int64_t ElementSize() {
     switch (PrimitiveType) {
       case TypeID::INT8: case TypeID::UINT8: return 1;
@@ -120,7 +96,7 @@ struct PrimitiveArray : public Array {
     }
   }
 
-  // 官方核心方法：获取指定索引值
+  // 核心方法：获取指定索引值
   template <typename T>
   T GetValue(int64_t idx) const {
     if (IsNull(idx)) throw std::runtime_error("Null value at index");
@@ -129,8 +105,8 @@ struct PrimitiveArray : public Array {
   }
 };
 
-// 对齐官方：Bool 数组（Primitive 特例）
-// 官方要点：
+// Bool 数组（Primitive 特例）
+
 // 1. 值以位存储（1bit/元素），与 null_bitmap 格式一致
 // 2. values 缓冲器字节长度 = ceil(length / 8)
 // 参考：arrow/array/boolean_array.h
@@ -150,8 +126,8 @@ struct BooleanArray : public Array {
 
 ### 2. 变长 Binary/String 布局（Variable Length Binary/String）
 ```cpp
-// 对齐官方：变长 Binary 数组（String 是 Binary 的 UTF-8 约束子集）
-// 官方要点：
+// 变长 Binary 数组（String 是 Binary 的 UTF-8 约束子集）
+
 // 1. 由 offsets + values 缓冲器组成，offsets 长度 = length + 1
 // 2. offsets[i] = 第 i 个元素在 values 中的起始字节位置
 // 3. LargeBinary/LargeString 用 int64 偏移（突破 2GB 限制）
@@ -164,7 +140,7 @@ struct BinaryArray : public Array {
 
   BinaryArray() { type_id = BinaryType; }
 
-  // 官方约束：偏移必须递增且非负
+  // 约束：偏移必须递增且非负
   bool ValidateOffsets() const {
     const auto* offs = offsets->As<OffsetType>();
     for (int64_t i = 1; i <= length; ++i) {
@@ -173,7 +149,7 @@ struct BinaryArray : public Array {
     return true;
   }
 
-  // 官方核心方法：获取指定索引的 Binary 元素
+  // 核心方法：获取指定索引的 Binary 元素
   std::string GetValue(int64_t idx) const {
     if (IsNull(idx)) throw std::runtime_error("Null value at index");
     const auto* offs = offsets->As<OffsetType>();
@@ -184,18 +160,18 @@ struct BinaryArray : public Array {
   }
 };
 
-// 对齐官方：String 数组（Binary 子集，增加 UTF-8 校验）
+// String 数组（Binary 子集，增加 UTF-8 校验）
 // 参考：arrow/array/string_array.h
 template <TypeID StringType, typename OffsetType = int32_t>
 struct StringArray : public BinaryArray<StringType, OffsetType> {
-  // 官方约束：校验 UTF-8 合法性
+  // 约束：校验 UTF-8 合法性
   bool ValidateUTF8() const {
     // 伪代码：遍历所有元素校验 UTF-8 编码
     return true;
   }
 };
 
-// 类型别名（对齐官方命名）
+// 类型别名（对齐命名）
 using BinaryArray32 = BinaryArray<TypeID::BINARY, int32_t>;
 using LargeBinaryArray = BinaryArray<TypeID::LARGE_BINARY, int64_t>;
 using StringArray32 = StringArray<TypeID::STRING, int32_t>;
@@ -204,8 +180,8 @@ using LargeStringArray = StringArray<TypeID::LARGE_STRING, int64_t>;
 
 ### 3. 变长 Binary/String View 布局（Binary/String View）
 ```cpp
-// 对齐官方：String View 数组（Binary View 同理）
-// 官方要点：
+// String View 数组（Binary View 同理）
+
 // 1. 设计目的：避免字符串拷贝，支持乱序写入、快速前缀比较
 // 2. view 缓冲器结构：每个元素占 16B（int32 len + uint32 prefix + int64 offset）
 //    - len：字符串长度
@@ -215,7 +191,7 @@ using LargeStringArray = StringArray<TypeID::LARGE_STRING, int64_t>;
 // 参考：arrow/array/string_view_array.h
 template <TypeID ViewType>
 struct StringViewArray : public Array {
-  // 官方定义：View 元素结构
+  // 定义：View 元素结构
   struct View {
     int32_t length;        // 字符串长度（Large 版为 int64_t）
     uint32_t prefix;       // 前 4 字节（UTF-8 编码）
@@ -227,13 +203,13 @@ struct StringViewArray : public Array {
 
   StringViewArray() { type_id = ViewType; }
 
-  // 官方核心方法：获取 View 结构
+  // 核心方法：获取 View 结构
   View GetView(int64_t idx) const {
     if (IsNull(idx)) throw std::runtime_error("Null value at index");
     return views->As<View>()[idx];
   }
 
-  // 快速前缀比较（官方核心优化点）
+  // 快速前缀比较（核心优化点）
   bool PrefixEquals(int64_t idx, const char* prefix, int32_t len) const {
     if (len > 4) return false; // prefix 仅存储前 4 字节
     auto view = GetView(idx);
@@ -248,8 +224,8 @@ using LargeStringViewArray = StringViewArray<TypeID::LARGE_STRING_VIEW>;
 
 ### 4. 变长 List 布局（Variable Length List）
 ```cpp
-// 对齐官方：变长 List 数组
-// 官方要点：
+// 变长 List 数组
+
 // 1. 本质是「数组的数组」，由 offsets + 子数组组成
 // 2. offsets[i] = 第 i 个 List 在子数组中的起始索引
 // 3. LargeList 用 int64 偏移（突破 2GB 限制）
@@ -262,19 +238,19 @@ struct ListArray : public Array {
 
   ListArray() { type_id = ListType; }
 
-  // 官方核心方法：获取指定索引的 List 切片（零拷贝）
+  // 核心方法：获取指定索引的 List 切片（零拷贝）
   std::shared_ptr<Array> GetSlice(int64_t idx) const {
     if (IsNull(idx)) throw std::runtime_error("Null value at index");
     const auto* offs = offsets->As<OffsetType>();
     const OffsetType start = offs[idx];
     const OffsetType end = offs[idx + 1];
     const int64_t slice_len = end - start;
-    // 官方实现：切片仅修改子数组的长度/偏移，不拷贝数据
+    // 实现：切片仅修改子数组的长度/偏移，不拷贝数据
     return SliceArray(values, start, slice_len);
   }
 
 private:
-  // 官方切片逻辑（伪代码）
+  // 切片逻辑（伪代码）
   std::shared_ptr<Array> SliceArray(std::shared_ptr<Array> arr, int64_t start, int64_t len) const {
     // 实际仅修改数组的 length/null_count，复用原有 Buffer
     return arr;
@@ -288,8 +264,8 @@ using LargeListArray = ListArray<TypeID::LARGE_LIST, int64_t>;
 
 ### 5. 固定大小 List 布局（Fixed Size List）
 ```cpp
-// 对齐官方：固定大小 List 数组
-// 官方要点：
+// 固定大小 List 数组
+
 // 1. 无 offsets 缓冲器，每个 List 固定包含 element_size 个元素
 // 2. 子数组总长度 = length * element_size
 // 3. 设计目的：优化固定长度列表（如 3D 坐标 [x,y,z]）的内存访问
@@ -300,7 +276,7 @@ struct FixedSizeListArray : public Array {
 
   FixedSizeListArray() { type_id = TypeID::FIXED_SIZE_LIST; }
 
-  // 官方核心方法：获取指定索引的 List 切片
+  // 核心方法：获取指定索引的 List 切片
   std::shared_ptr<Array> GetSlice(int64_t idx) const {
     if (IsNull(idx)) throw std::runtime_error("Null value at index");
     const int64_t start = idx * element_size;
@@ -317,8 +293,8 @@ private:
 
 ### 6. List View 布局（List View）
 ```cpp
-// 对齐官方：List View 数组
-// 官方要点：
+// List View 数组
+
 // 1. 设计目的：支持 offsets 乱序，无需从连续偏移推导 List 大小
 // 2. 由 sizes + offsets + 子数组组成：
 //    - sizes：每个 List 的元素个数
@@ -335,7 +311,7 @@ struct ListViewArray : public Array {
 
   ListViewArray() { type_id = ListViewType; }
 
-  // 官方核心方法：获取 List 大小和起始偏移
+  // 核心方法：获取 List 大小和起始偏移
   std::pair<OffsetType, OffsetType> GetSizeAndOffset(int64_t idx) const {
     if (IsNull(idx)) throw std::runtime_error("Null value at index");
     const auto* sizes_data = sizes->As<OffsetType>();
@@ -351,8 +327,8 @@ using LargeListViewArray = ListViewArray<TypeID::LARGE_LIST_VIEW>;
 
 ### 7. Struct 布局（Struct）
 ```cpp
-// 对齐官方：Struct 数组
-// 官方要点：
+// Struct 数组
+
 // 1. 由多个等长的子数组组成，每个子数组对应一个字段
 // 2. Struct 的 Null 由自身 null_bitmap 决定，子数组的 Null 独立
 // 3. 字段顺序固定，字段名可选（可为空）
@@ -363,7 +339,7 @@ struct StructArray : public Array {
 
   StructArray() { type_id = TypeID::STRUCT; }
 
-  // 官方约束：子数组长度必须与 Struct 数组一致
+  // 约束：子数组长度必须与 Struct 数组一致
   bool ValidateChildrenLength() const {
     for (const auto& child : children) {
       if (child->length != length) return false;
@@ -371,7 +347,7 @@ struct StructArray : public Array {
     return true;
   }
 
-  // 官方核心方法：获取指定索引的指定字段值
+  // 核心方法：获取指定索引的指定字段值
   std::shared_ptr<Array> GetFieldValue(int64_t struct_idx, int64_t field_idx) const {
     if (IsNull(struct_idx)) throw std::runtime_error("Null Struct element");
     auto& child = children[field_idx];
@@ -387,8 +363,8 @@ private:
 
 ### 8. Map 布局（Map）
 ```cpp
-// 对齐官方：Map 数组
-// 官方要点：
+// Map 数组
+
 // 1. 本质是「List<Struct<key, value>>」的语法糖
 // 2. 核心约束：key 可选唯一（sorted/unique 元数据标记）
 // 3. 布局：ListArray 的子数组是 StructArray（包含 key/value 两个字段）
@@ -400,7 +376,7 @@ struct MapArray : public Array {
 
   MapArray() { type_id = TypeID::MAP; }
 
-  // 官方核心方法：获取指定索引的 Map 条目
+  // 核心方法：获取指定索引的 Map 条目
   std::shared_ptr<StructArray> GetEntries(int64_t idx) const {
     if (IsNull(idx)) throw std::runtime_error("Null Map element");
     auto slice = entries->GetSlice(idx);
@@ -422,8 +398,8 @@ struct MapArray : public Array {
 
 ### 9. Union 布局（Union）
 ```cpp
-// 对齐官方：Union 数组（Dense/Sparse）
-// 官方要点：
+// Union 数组（Dense/Sparse）
+
 // 1. DenseUnion：type_ids + offsets 缓冲器，子数组长度适配 offsets
 //    - type_ids：每个元素的子数组类型 ID
 //    - offsets：每个元素在对应子数组中的索引
@@ -437,7 +413,7 @@ struct UnionArray : public Array {
 
   UnionArray(TypeID union_type) { type_id = union_type; }
 
-  // 官方核心方法：获取指定索引的元素（Dense/Sparse 统一逻辑）
+  // 核心方法：获取指定索引的元素（Dense/Sparse 统一逻辑）
   std::shared_ptr<Array> GetValue(int64_t idx) const {
     if (IsNull(idx)) throw std::runtime_error("Null Union element");
     const int8_t type_id = type_ids->As<int8_t>()[idx];
@@ -472,8 +448,8 @@ using SparseUnionArray = UnionArray;
 
 ### 10. 字典编码布局（Dictionary Encoded）
 ```cpp
-// 对齐官方：字典编码数组
-// 官方要点：
+// 字典编码数组
+
 // 1. 设计目的：优化重复值多的场景，减少内存占用
 // 2. 由 indices（索引数组） + dictionary（字典数组）组成
 // 3. indices 为 int32/int64 类型，值为 dictionary 的索引
@@ -485,7 +461,7 @@ struct DictionaryArray : public Array {
 
   DictionaryArray() { type_id = TypeID::DICTIONARY; }
 
-  // 官方核心方法：解析索引为原始值
+  // 核心方法：解析索引为原始值
   std::shared_ptr<Array> GetValue(int64_t idx) const {
     if (IsNull(idx)) throw std::runtime_error("Null value at index");
     // 1. 获取索引值
@@ -503,8 +479,8 @@ private:
 
 ### 11. 运行结束编码布局（Run-End Encoded）
 ```cpp
-// 对齐官方：运行结束编码（Run-End Encoded, RLE）数组
-// 官方要点：
+// 运行结束编码（Run-End Encoded, RLE）数组
+
 // 1. 设计目的：优化连续重复值场景（如时序/分类数据）
 // 2. 由 run_ends + values 组成：
 //    - run_ends：递增的结束索引，长度=运行段数
@@ -518,7 +494,7 @@ struct RunEndEncodedArray : public Array {
 
   RunEndEncodedArray() { type_id = TypeID::RUN_END_ENCODED; }
 
-  // 官方核心方法：查找指定索引所属的运行段（二分查找）
+  // 核心方法：查找指定索引所属的运行段（二分查找）
   int64_t FindRunIndex(int64_t idx) const {
     if (idx < 0 || idx >= length) throw std::out_of_range("Index out of bounds");
     const auto* ends = run_ends->As<RunEndType>();
@@ -537,7 +513,7 @@ struct RunEndEncodedArray : public Array {
     return left;
   }
 
-  // 官方核心方法：获取指定索引的原始值
+  // 核心方法：获取指定索引的原始值
   std::shared_ptr<Array> GetValue(int64_t idx) const {
     if (IsNull(idx)) throw std::runtime_error("Null value at index");
     const int64_t run_idx = FindRunIndex(idx);
@@ -555,8 +531,8 @@ using RunEndEncodedArray32 = RunEndEncodedArray<int32_t>;
 using LargeRunEndEncodedArray = RunEndEncodedArray<int64_t>;
 ```
 
-### 核心要点总结（对齐官方文档）
-| 布局类型                | 核心设计目的                  | 关键结构                          | 官方约束/优化点                     |
+### 核心要点总结（对齐文档）
+| 布局类型                | 核心设计目的                  | 关键结构                          | 约束/优化点                     |
 |-------------------------|-------------------------------|-----------------------------------|-------------------------------------|
 | 固定大小 Primitive      | 高效存储固定长度基础类型      | values 缓冲器（连续字节/位）      | bool 用位存储，减少内存占用         |
 | 变长 Binary/String      | 存储变长字节/字符串           | offsets + values 缓冲器           | Large 版用 int64 偏移突破 2GB 限制  |
@@ -570,4 +546,4 @@ using LargeRunEndEncodedArray = RunEndEncodedArray<int64_t>;
 | 字典编码                | 优化重复值多的场景            | indices + dictionary              | dictionary 无重复值，索引占空间小   |
 | 运行结束编码            | 优化连续重复值                | run_ends + values                 | run_ends 递增，二分查找快速定位     |
 
-以上伪代码完全对齐 Arrow 官方文档的布局定义和 C++ 源码结构，省略了内存池、序列化、类型校验等非核心逻辑，但保留了所有布局的**核心内存结构**和**官方约束**，可直接作为理解 Arrow 内存模型的参考。
+以上伪代码完全对齐 Arrow 文档的布局定义和 C++ 源码结构，省略了内存池、序列化、类型校验等非核心逻辑，但保留了所有布局的**核心内存结构**和**约束**，可直接作为理解 Arrow 内存模型的参考。
