@@ -2,7 +2,9 @@
 
 本文结合 [Apache Arrow Specifications](https://arrow.apache.org/docs/format/Intro.html) 和 [源代码](https://github.com/apache/arrow/tree/main/cpp/src/arrow)。记录 `Apache Arrow` 提供的数据类型，以及这些类型对应的内存分布。
 
-### 前置定义：`Arrow`的基础结构
+> [Arrow Columnar Format](https://arrow.apache.org/docs/format/Columnar.html)
+
+### 前置：`Arrow`的基础结构
 
 `Arrow` 最基础的类型枚举、`Buffer`、`Field`、`Array` 基类
 
@@ -31,196 +33,384 @@ enum class TypeID {
   DICTIONARY,
   RUN_END_ENCODED
 };
+```
 
-// Arrow 连续内存缓冲器（Buffer）
+Arrow 连续内存缓冲器（Buffer）。Arrow 规范要求内存分配满足特定对齐要求（通常为 64 字节），Buffer 实现确保了这一点
+
+```cpp
 // 1. 通常具有只读语义：构建后不修改，零拷贝共享的核心
-// 2. 内存由 MemoryPool 管理（伪代码简化为 raw 指针）
+// 2. 内存由 MemoryPool 管理
 // 3. 支持空缓冲器（data=nullptr, size=0）
 // 参考：arrow/buffer.h
 class Buffer {
-  bool is_mutable_;
-  bool is_cpu_;
-  const uint8_t* data_;
-  int64_t size_;
-  int64_t capacity_;
+  bool is_mutable_;     // 标志控制内存是否可写
+  bool is_cpu_;         // 快速检查是否为 CPU 内存
+  const uint8_t* data_; // 指向内存的指针
+  int64_t size_;        // 有效数据大小
+  int64_t capacity_;    // 总分配容量
+  DeviceAllocationType device_type_;    // 标识内存所在设备类型
+  // null by default, but may be set
+  std::shared_ptr<Buffer> parent_;      // 最主要的作用是支持零拷贝切片操作(内存安全、避免悬空指针)
 };
+```
 
-// Arrow 一维数组基类（Array）
-// 1. 所有具体数组类型的父类，统一抽象长度、Null 管理
-// 2. null_bitmap 为空时表示无 Null 值（null_count=0）
-// 3. 核心属性：length（元素数）、null_count（Null 数）、null_bitmap（有效性位图）
-// 参考：arrow/array.h arrow/array/data.h arrow/array/array_base.h
+值得注意的事这里的 `parent_` 成员，它最主要的作用是支持零拷贝切片操作(内存安全、避免悬空指针)。
+
+通过持有原始 Buffer 的 shared_ptr，切片 Buffer 确保：原始内存块在所有切片都被销毁前不会被释；避免了悬空指针问题；实现了内存的安全共享
+
+`parent_` 同时还支持多层切片，形成链式引用：对切片再次切片时，新切片的 parent_ 指向直接父切片；整个链共同维护对原始内存的引用
+
+```cpp
+  Buffer(std::shared_ptr<Buffer> parent, const int64_t offset, const int64_t size)
+    : Buffer(parent->data_ + offset, size) {
+  parent_ = std::move(parent);  // 保存对原始Buffer的引用
+  SetMemoryManager(parent_->memory_manager_);
+  }
+
+  static inline std::shared_ptr<Buffer> SliceBuffer(std::shared_ptr<Buffer> buffer,
+                                                  const int64_t offset,
+                                                  const int64_t length) {
+  return std::make_shared<Buffer>(std::move(buffer), offset, length);
+  }
+```
+
+`ArrayData` 通过**统一的内存模型、灵活的分层结构、高效的空值处理和设备无关设计**，为数据存储和分析提供了高效、灵活且安全的基础。
+
+```cpp
+// arrow/array/data.h arrow/array/array_base.h
 class ArrayData{
-  std::shared_ptr<DataType> type;
-  int64_t length = 0;
-  mutable std::atomic<int64_t> null_count{0};
+  std::shared_ptr<DataType> type;               // 数据类型
+  int64_t length = 0;                           // 数组长度
+  mutable std::atomic<int64_t> null_count{0};   // // 缓存的空值计数
   // The logical start point into the physical buffers (in values, not bytes).
   // Note that, for child data, this must be *added* to the child data's own offset.
   int64_t offset = 0;
-  std::vector<std::shared_ptr<Buffer>> buffers;
-  std::vector<std::shared_ptr<ArrayData>> child_data;
+  // 基于 Buffer 的多缓冲区设计(有效性位图、值数据等分离存储, buffers[0] 通常是有效性位图)
+  std::vector<std::shared_ptr<Buffer>> buffers;         
+  std::vector<std::shared_ptr<ArrayData>> child_data;   // 支持嵌套数据类型
   // The dictionary for this Array, if any. Only used for dictionary type
   std::shared_ptr<ArrayData> dictionary;
   // The statistics for this Array.
   std::shared_ptr<ArrayStatistics> statistics;
 };
+```
 
+`ArrayData` 支持跨设备内存管理，通过统一的内存访问接口，实现高效的跨设备数据传输
+
+```cpp
+  Result<std::shared_ptr<ArrayData>> CopyTo(const std::shared_ptr<MemoryManager>& to) const;
+  Result<std::shared_ptr<ArrayData>> ViewOrCopyTo(const std::shared_ptr<MemoryManager>& to) const;
+```
+
+`Array` 类被设计为不可变数据容器，采用了数据与接口分离的设计模式
+
+```cpp
+// arrow/array.h
 class Array {
-  std::shared_ptr<ArrayData> data_;
-  const uint8_t* null_bitmap_data_ = NULLPTR;
+  std::shared_ptr<ArrayData> data_;             // 实际数据存储
+  const uint8_t* null_bitmap_data_ = NULLPTR;   // 采用位图（bitmap）表示空值状态
 };
 ```
 
+`Array` 与 `ArrayData`：
+
+| 特性 | Array | ArrayData |
+|------|-------|-----------|
+| 性质 | 不可变接口 | 可变数据容器 |
+| 用途 | 外部访问接口 | 内部数据操作 |
+| 设计 | 面向用户 | 面向实现 |
+| 类型安全 | 强类型 | 弱类型 |
+
+这种分离设计使得：
+
+- 用户可以通过类型安全的 `Array` 接口访问数据
+- 内部实现可以通过 `ArrayData` 高效地操作原始数据
+- 数据可以在不同类型的 `Array` 之间共享，提高内存利用率
+
 ### 1. 固定大小 Primitive 布局（Fixed Size Primitive）
+
+`PrimitiveArray` 是 `Arrow` 中用于表示基本数据类型数组的抽象基类，专门用于处理具有固定大小元素的原始数据类型，如数值类型、布尔类型和时间间隔类型等
+
 ```cpp
-// 固定大小 Primitive 数组
+// arrow/array/array_base.h arrow/array/array_primitive.h
+// Base class for arrays of fixed-size logical types
+class ARROW_EXPORT PrimitiveArray : public FlatArray {
+    // 从父类继承的成员
+    // std::shared_ptr<ArrayData> data_;
+    // const uint8_t* null_bitmap_data_ = NULLPTR;
 
-// 1. 元素字节长度固定（如 int32=4B，float64=8B，bool=1bit）
-// 2. bool 类型特殊：值以位存储（而非字节），单独处理
-// 3. values 缓冲器字节长度 = length * 元素字节数（bool 为 ceil(length/8)）
-// 参考：arrow/array/primitive_array.h
-template <TypeID PrimitiveType>
-struct PrimitiveArray : public Array {
-  std::shared_ptr<Buffer> values; // 值缓冲器：连续存储所有元素
-
-  // 元素字节长度（预定义）
-  static constexpr int64_t ElementSize() {
-    switch (PrimitiveType) {
-      case TypeID::INT8: case TypeID::UINT8: return 1;
-      case TypeID::INT16: case TypeID::UINT16: return 2;
-      case TypeID::INT32: case TypeID::UINT32: case TypeID::FLOAT32: return 4;
-      case TypeID::INT64: case TypeID::UINT64: case TypeID::FLOAT64: return 8;
-      case TypeID::DATE32: case TypeID::TIME32: return 4;
-      case TypeID::DATE64: case TypeID::TIME64: return 8;
-      default: throw std::invalid_argument("Not a fixed-size primitive type");
-    }
-  }
-
-  // 核心方法：获取指定索引值
-  template <typename T>
-  T GetValue(int64_t idx) const {
-    if (IsNull(idx)) throw std::runtime_error("Null value at index");
-    if (values->IsEmpty()) throw std::runtime_error("Empty values buffer");
-    return values->As<T>()[idx];
-  }
+    const uint8_t* raw_values_; // // 指向数据缓冲区的直接指针
 };
 
-// Bool 数组（Primitive 特例）
+// 构造函数
+PrimitiveArray(const std::shared_ptr<DataType>& type, int64_t length,
+               const std::shared_ptr<Buffer>& data,
+               const std::shared_ptr<Buffer>& null_bitmap = NULLPTR,
+               int64_t null_count = kUnknownNullCount, int64_t offset = 0);
 
-// 1. 值以位存储（1bit/元素），与 null_bitmap 格式一致
-// 2. values 缓冲器字节长度 = ceil(length / 8)
-// 参考：arrow/array/boolean_array.h
-struct BooleanArray : public Array {
-  std::shared_ptr<Buffer> values; // 值位图：1bit/元素，1=true，0=false
+// 设置数据
+void SetData(const std::shared_ptr<ArrayData>& data) {
+  this->Array::SetData(data);
+  raw_values_ = data->GetValuesSafe<uint8_t>(1, /*offset=*/0);
+}
 
-  BooleanArray() { type_id = TypeID::BOOL; }
+// 获取值缓冲区
+const std::shared_ptr<Buffer>& values() const { return data_->buffers[1]; }
+```
 
-  bool GetValue(int64_t idx) const {
-    if (IsNull(idx)) throw std::runtime_error("Null value at index");
-    const int64_t byte_idx = idx / 8;
-    const int64_t bit_idx = idx % 8;
-    return (values->As<uint8_t>()[byte_idx] & (1 << bit_idx)) != 0;
-  }
-};
+继承链
+
+```shell
+Array
+└── FlatArray
+    └── PrimitiveArray
+        ├── BooleanArray
+        ├── NumericArray<TYPE> (模板类)
+        │   ├── Int8Array
+        │   ├── Int16Array
+        │   ├── Int32Array
+        │   ├── Int64Array
+        │   ├── UInt8Array
+        │   ├── UInt16Array
+        │   ├── UInt32Array
+        │   ├── UInt64Array
+        │   ├── FloatArray
+        │   ├── DoubleArray
+        │   ├── Date32Array
+        │   ├── Date64Array
+        │   ├── Time32Array
+        │   ├── Time64Array
+        │   ├── TimestampArray
+        │   └── ...
+        ├── DayTimeIntervalArray
+        └── MonthDayNanoIntervalArray
+```
+
+Int32 Array
+
+```shell
+# [1, null, 2, 4, 8]
+* Length: 5, Null count: 1
+* Validity bitmap buffer:
+
+  | Byte 0 (validity bitmap) | Bytes 1-63            |
+  |--------------------------|-----------------------|
+  | 00011101                 | 0 (padding)           |
+
+* Value Buffer:
+
+  | Bytes 0-3   | Bytes 4-7   | Bytes 8-11  | Bytes 12-15 | Bytes 16-19 | Bytes 20-63           |
+  |-------------|-------------|-------------|-------------|-------------|-----------------------|
+  | 1           | unspecified | 2           | 4           | 8           | unspecified (padding) |
+```
+
+Non-null int32 Array may elide bitmap
+
+```shell
+# [1, 2, 3, 4, 8]
+* Length 5, Null count: 0
+* Validity bitmap buffer: Not required
+* Value Buffer:
+
+  | Bytes 0-3   | Bytes 4-7   | Bytes 8-11  | bytes 12-15 | bytes 16-19 | Bytes 20-63           |
+  |-------------|-------------|-------------|-------------|-------------|-----------------------|
+  | 1           | 2           | 3           | 4           | 8           | unspecified (padding) |
 ```
 
 ### 2. 变长 Binary/String 布局（Variable Length Binary/String）
+
+`BinaryType` 是 `Arrow` 中用于表示可变大小二进制数据的核心类型类，定义在 `array_binary.h` 文件中，继承自 `BaseBinaryType`
+
 ```cpp
-// 变长 Binary 数组（String 是 Binary 的 UTF-8 约束子集）
+// arrow/array/array_binary.h
+// Base class for variable-sized binary arrays, regardless of offset size
+// and logical interpretation.
+template <typename TYPE>
+class BaseBinaryArray : public FlatArray {
+};
 
-// 1. 由 offsets + values 缓冲器组成，offsets 长度 = length + 1
-// 2. offsets[i] = 第 i 个元素在 values 中的起始字节位置
-// 3. LargeBinary/LargeString 用 int64 偏移（突破 2GB 限制）
-// 4. String 要求 values 数据为 UTF-8 编码，Binary 无编码约束
-// 参考：arrow/array/binary_array.h
-template <TypeID BinaryType, typename OffsetType = int32_t>
-struct BinaryArray : public Array {
-  std::shared_ptr<Buffer> offsets; // 偏移缓冲器：OffsetType[]，长度=length+1
-  std::shared_ptr<Buffer> values;  // 值缓冲器：连续存储所有元素的字节数据
+class ARROW_EXPORT BinaryType : public BaseBinaryType {
+ public:
+  static constexpr Type::type type_id = Type::BINARY;
+  static constexpr bool is_utf8 = false;
+  using offset_type = int32_t;
+  using PhysicalType = BinaryType;
 
-  BinaryArray() { type_id = BinaryType; }
+  static constexpr const char* type_name() { return "binary"; }
 
-  // 约束：偏移必须递增且非负
-  bool ValidateOffsets() const {
-    const auto* offs = offsets->As<OffsetType>();
-    for (int64_t i = 1; i <= length; ++i) {
-      if (offs[i] < offs[i-1] || offs[i] > values->size) return false;
-    }
-    return true;
-  }
+  BinaryType() : BinaryType(Type::BINARY) {}
 
-  // 核心方法：获取指定索引的 Binary 元素
-  std::string GetValue(int64_t idx) const {
-    if (IsNull(idx)) throw std::runtime_error("Null value at index");
-    const auto* offs = offsets->As<OffsetType>();
-    const OffsetType start = offs[idx];
-    const OffsetType end = offs[idx + 1];
-    const int64_t len = end - start;
-    return std::string(reinterpret_cast<const char*>(values->data + start), len);
+  DataTypeLayout layout() const override {
+    return DataTypeLayout({DataTypeLayout::Bitmap(),
+                           DataTypeLayout::FixedWidth(sizeof(offset_type)),
+                           DataTypeLayout::VariableWidth()});
   }
 };
 
-// String 数组（Binary 子集，增加 UTF-8 校验）
-// 参考：arrow/array/string_array.h
-template <TypeID StringType, typename OffsetType = int32_t>
-struct StringArray : public BinaryArray<StringType, OffsetType> {
-  // 约束：校验 UTF-8 合法性
-  bool ValidateUTF8() const {
-    // 伪代码：遍历所有元素校验 UTF-8 编码
-    return true;
-  }
-};
+class ARROW_EXPORT BinaryArray : public BaseBinaryArray<BinaryType> {
+ public:
+  explicit BinaryArray(const std::shared_ptr<ArrayData>& data);
 
-// 类型别名（对齐命名）
-using BinaryArray32 = BinaryArray<TypeID::BINARY, int32_t>;
-using LargeBinaryArray = BinaryArray<TypeID::LARGE_BINARY, int64_t>;
-using StringArray32 = StringArray<TypeID::STRING, int32_t>;
-using LargeStringArray = StringArray<TypeID::LARGE_STRING, int64_t>;
+  BinaryArray(int64_t length, const std::shared_ptr<Buffer>& value_offsets,
+              const std::shared_ptr<Buffer>& data,
+              const std::shared_ptr<Buffer>& null_bitmap = NULLPTR,
+              int64_t null_count = kUnknownNullCount, int64_t offset = 0);
+};
 ```
+
+继承结构
+
+```shell
+DataType
+└── BaseBinaryType
+    ├── BinaryType          # 使用 32 位偏移量的标准二进制类型
+    │   └── StringType      # 用于 UTF-8 字符串
+    ├── LargeBinaryType     # 用于 UTF-8 字符串
+    │   └── LargeStringType
+    └── BinaryViewType      # 二进制视图类型，支持内联优化
+```
+
+``VarBinary``例子：
+
+```shell
+# ['joe', null, null, 'mark']
+
+
+* Length: 4, Null count: 2
+* Validity bitmap buffer:   # 每个位代表一个元素是否为空
+
+  | Byte 0 (validity bitmap) | Bytes 1-63            |
+  |--------------------------|-----------------------|
+  | 00001001                 | 0 (padding)           |
+
+* Offsets buffer:   # offsets[j+1] >= offsets[j] for 0 <= j < length
+
+  | Bytes 0-19     | Bytes 20-63           |
+  |----------------|-----------------------|
+  | 0, 3, 3, 3, 7  | unspecified (padding) |
+
+ * Value buffer:    # 连续存储二进制数据，item[i] = [offsets[i], offsets[i+1])
+
+  | Bytes 0-6      | Bytes 7-63            |
+  |----------------|-----------------------|
+  | joemark        | unspecified (padding) |
+```
+
+`StringType` 继承自 `BinaryType`，主要区别在于：
+
+- `StringType::is_utf8 = true`
+- 提供额外的 UTF-8 验证方法（如 `ValidateUTF8()`）
+
+BinaryType 适用于以下场景：
+
+- 存储任意二进制数据（如图像、音频、视频片段）
+- 存储序列化对象
+- 存储非 UTF-8 编码的文本数据
+- 需要高效二进制数据处理的场景
+
+| 类型 | 偏移量类型 | 最大大小 | 适用场景 |
+|------|------------|----------|----------|
+| BinaryType | int32_t | 2GB | 大多数二进制数据场景 |
+| LargeBinaryType | int64_t | 9EB | 大型二进制数据 |
+| BinaryViewType | 无 | 2GB | 二进制视图，支持内联优化 |
+| FixedSizeBinaryType | 无 | 固定大小 | 固定长度二进制数据 |
 
 ### 3. 变长 Binary/String View 布局（Binary/String View）
+
+`StringViewArray` 是 `Arrow` 中用于高效表示可变大小 UTF-8 字符串的数组类型，它继承自 `BinaryViewArray`，采用了**视图（View）**设计模式，结合了内联存储和引用存储的优势，旨在提供更高效的字符串处理性能。
+
 ```cpp
-// String View 数组（Binary View 同理）
+// arrow/array/array_binary.h
+class ARROW_EXPORT StringViewType : public BinaryViewType {
+ public:
+  static constexpr Type::type type_id = Type::STRING_VIEW;
+  static constexpr bool is_utf8 = true;
+  using PhysicalType = BinaryViewType;
 
-// 1. 设计目的：避免字符串拷贝，支持乱序写入、快速前缀比较
-// 2. view 缓冲器结构：每个元素占 16B（int32 len + uint32 prefix + int64 offset）
-//    - len：字符串长度
-//    - prefix：前 4 字节（快速比较，无需读取完整字符串）
-//    - offset：在 values 中的起始偏移
-// 3. LargeStringView 用 int64 len/offset（突破 2GB 限制）
-// 参考：arrow/array/string_view_array.h
-template <TypeID ViewType>
-struct StringViewArray : public Array {
-  // 定义：View 元素结构
-  struct View {
-    int32_t length;        // 字符串长度（Large 版为 int64_t）
-    uint32_t prefix;       // 前 4 字节（UTF-8 编码）
-    int64_t offset;        // 在 values 中的起始偏移
-  };
+  static constexpr const char* type_name() { return "utf8_view"; }
 
-  std::shared_ptr<Buffer> views;   // View 缓冲器：View[]，长度=length*sizeof(View)
-  std::shared_ptr<Buffer> values;  // 原始字符串数据缓冲器
-
-  StringViewArray() { type_id = ViewType; }
-
-  // 核心方法：获取 View 结构
-  View GetView(int64_t idx) const {
-    if (IsNull(idx)) throw std::runtime_error("Null value at index");
-    return views->As<View>()[idx];
-  }
-
-  // 快速前缀比较（核心优化点）
-  bool PrefixEquals(int64_t idx, const char* prefix, int32_t len) const {
-    if (len > 4) return false; // prefix 仅存储前 4 字节
-    auto view = GetView(idx);
-    return memcmp(&view.prefix, prefix, len) == 0;
-  }
+  StringViewType() : BinaryViewType(Type::STRING_VIEW) {}
 };
 
-// 类型别名
-using StringViewArray32 = StringViewArray<TypeID::STRING_VIEW>;
-using LargeStringViewArray = StringViewArray<TypeID::LARGE_STRING_VIEW>;
+class ARROW_EXPORT StringViewArray : public BinaryViewArray {
+ public:
+  using TypeClass = StringViewType;
+
+  explicit StringViewArray(std::shared_ptr<ArrayData> data);
+
+  using BinaryViewArray::BinaryViewArray;
+
+  /// \brief Validate that this array contains only valid UTF8 entries
+  ///
+  /// This check is also implied by ValidateFull()
+  Status ValidateUTF8() const;
+};
 ```
+
+继承结构
+
+```shell
+Array
+└── FlatArray
+    └── BinaryViewArray
+        └── StringViewArray
+```
+
+`StringViewArray` 的高效性主要来自于其底层的视图存储机制，该机制由 `BinaryViewType::c_type` 联合体实现：
+
+```cpp
+/// This union supports two states:
+///
+/// - Entirely inlined string data
+/// \code{.unparsed}
+///                |----|--------------|
+///                 ^    ^
+///                 |    |
+///              size    in-line string data, zero padded
+/// \endcode
+///
+/// - Reference into a buffer
+/// \code{.unparsed}
+///                |----|----|----|----|
+///                 ^    ^    ^    ^
+///                 |    |    |    |
+///              size    |    |    `------.
+///                  prefix   |           |
+///                        buffer index   |
+///                                  offset in buffer
+/// \endcode
+union alignas(int64_t) c_type {
+  struct {
+    int32_t size;
+    std::array<uint8_t, kInlineSize> data;      // kInlineSize = 12：内联存储的最大数据大小
+  } inlined;
+
+  struct {
+    int32_t size;
+    std::array<uint8_t, kPrefixSize> prefix;    // kPrefixSize = 4：引用存储时的前缀大小
+    int32_t buffer_index;
+    int32_t offset;
+  } ref;
+};
+```
+
+layouts:
+
+```shell
+* Short strings, length <= 12
+  | Bytes 0-3  | Bytes 4-15                            |
+  |------------|---------------------------------------|
+  | length     | data (padded with 0)                  |
+
+* Long strings, length > 12
+  | Bytes 0-3  | Bytes 4-7  | Bytes 8-11 | Bytes 12-15 |
+  |------------|------------|------------|-------------|
+  | length     | prefix     | buf. index | offset      |
+```
+
+example:
+
+![Physical layout diagram for variable length string view data type](https://raw.githubusercontent.com/TDAkory/ImageResources/master/img/AppFrameThoughts/arrow_string_view_array.svg)
 
 ### 4. 变长 List 布局（Variable Length List）
 ```cpp
