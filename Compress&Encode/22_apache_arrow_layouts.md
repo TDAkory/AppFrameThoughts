@@ -413,75 +413,83 @@ example:
 ![Physical layout diagram for variable length string view data type](https://raw.githubusercontent.com/TDAkory/ImageResources/master/img/AppFrameThoughts/arrow_string_view_array.svg)
 
 ### 4. 变长 List 布局（Variable Length List）
+
+`ListArray` 是 `Arrow` 中用于表示可变大小列表数据的核心数组类型，是 `Arrow` 处理复杂数据类型的基础组件之一。
+
 ```cpp
 // 变长 List 数组
+// arrow/array/array_nested.h
+class ARROW_EXPORT ListType : public BaseListType {
+ public:
+  static constexpr Type::type type_id = Type::LIST;
+  using offset_type = int32_t;
 
-// 1. 本质是「数组的数组」，由 offsets + 子数组组成
-// 2. offsets[i] = 第 i 个 List 在子数组中的起始索引
-// 3. LargeList 用 int64 偏移（突破 2GB 限制）
-// 4. 子数组可为任意类型（Primitive/Binary/Struct 等）
-// 参考：arrow/array/list_array.h
-template <TypeID ListType, typename OffsetType = int32_t>
-struct ListArray : public Array {
-  std::shared_ptr<Buffer> offsets; // 偏移缓冲器：OffsetType[]，长度=length+1
-  std::shared_ptr<Array> values;   // 子数组：存储所有 List 的底层元素
-
-  ListArray() { type_id = ListType; }
-
-  // 核心方法：获取指定索引的 List 切片（零拷贝）
-  std::shared_ptr<Array> GetSlice(int64_t idx) const {
-    if (IsNull(idx)) throw std::runtime_error("Null value at index");
-    const auto* offs = offsets->As<OffsetType>();
-    const OffsetType start = offs[idx];
-    const OffsetType end = offs[idx + 1];
-    const int64_t slice_len = end - start;
-    // 实现：切片仅修改子数组的长度/偏移，不拷贝数据
-    return SliceArray(values, start, slice_len);
-  }
-
-private:
-  // 切片逻辑（伪代码）
-  std::shared_ptr<Array> SliceArray(std::shared_ptr<Array> arr, int64_t start, int64_t len) const {
-    // 实际仅修改数组的 length/null_count，复用原有 Buffer
-    return arr;
+  DataTypeLayout layout() const override {
+    return DataTypeLayout(
+        {DataTypeLayout::Bitmap(), DataTypeLayout::FixedWidth(sizeof(offset_type))});
   }
 };
 
-// 类型别名
-using ListArray32 = ListArray<TypeID::LIST, int32_t>;
-using LargeListArray = ListArray<TypeID::LARGE_LIST, int64_t>;
-```
+class ARROW_EXPORT ListArray : public BaseListArray<ListType> {
+ public:
+  explicit ListArray(std::shared_ptr<ArrayData> data);
 
-### 5. 固定大小 List 布局（Fixed Size List）
-```cpp
-// 固定大小 List 数组
-
-// 1. 无 offsets 缓冲器，每个 List 固定包含 element_size 个元素
-// 2. 子数组总长度 = length * element_size
-// 3. 设计目的：优化固定长度列表（如 3D 坐标 [x,y,z]）的内存访问
-// 参考：arrow/array/fixed_size_list_array.h
-struct FixedSizeListArray : public Array {
-  int32_t element_size;           // 每个 List 固定的元素个数
-  std::shared_ptr<Array> values;  // 子数组：总长度 = length * element_size
-
-  FixedSizeListArray() { type_id = TypeID::FIXED_SIZE_LIST; }
-
-  // 核心方法：获取指定索引的 List 切片
-  std::shared_ptr<Array> GetSlice(int64_t idx) const {
-    if (IsNull(idx)) throw std::runtime_error("Null value at index");
-    const int64_t start = idx * element_size;
-    const int64_t len = element_size;
-    return SliceArray(values, start, len);
-  }
-
-private:
-  std::shared_ptr<Array> SliceArray(std::shared_ptr<Array> arr, int64_t start, int64_t len) const {
-    return arr;
-  }
+  ListArray(std::shared_ptr<DataType> type, int64_t length,
+            std::shared_ptr<Buffer> value_offsets, std::shared_ptr<Array> values,
+            std::shared_ptr<Buffer> null_bitmap = NULLPTR,
+            int64_t null_count = kUnknownNullCount, int64_t offset = 0);
 };
 ```
 
-### 6. List View 布局（List View）
+Layouts
+
+```shell
+Array
+└── VarLengthListLikeArray
+    └── BaseListArray
+        └── ListArray
+```
+
+ListArray 采用偏移量+数据的经典列表存储设计：支持 O(1) 时间复杂度获取任意列表的起始位置和长度
+
+```shell
+# an example of List<Int8> with length 4 having values
+# [[12, -7, 25], null, [0, -127, 127, 50], []]
+
+* Length: 4, Null count: 1
+* Validity bitmap buffer:
+
+  | Byte 0 (validity bitmap) | Bytes 1-63            |
+  |--------------------------|-----------------------|
+  | 00001101                 | 0 (padding)           |
+
+* Offsets buffer (int32) # offsets[i] 表示第 i 个列表在数据区的起始位置，offsets[i+1] 表示结束位置
+
+  | Bytes 0-3  | Bytes 4-7   | Bytes 8-11  | Bytes 12-15 | Bytes 16-19 | Bytes 20-63           |
+  |------------|-------------|-------------|-------------|-------------|-----------------------|
+  | 0          | 3           | 3           | 7           | 7           | unspecified (padding) |
+
+* Values array (Int8Array): # 连续存储所有列表的元素数据
+  * Length: 7,  Null count: 0
+  * Validity bitmap buffer: Not required
+  * Values buffer (int8)
+
+    | Bytes 0-6                    | Bytes 7-63            |
+    |------------------------------|-----------------------|
+    | 12, -7, 25, 0, -127, 127, 50 | unspecified (padding) |
+```
+
+类似的，也有使用 64-bit offset 的派生：`class ARROW_EXPORT LargeListArray : public BaseListArray<LargeListType>`
+
+| 特性 | ListArray | LargeListArray |
+|------|-----------|----------------|
+| 偏移量类型 | int32_t | int64_t |
+| 最大列表长度 | 2GB | 9EB |
+| 内存占用 | 较小（4字节/偏移量） | 较大（8字节/偏移量） |
+| 适用场景 | 大多数列表数据 | 超大列表数据 |
+| 类型ID | Type::LIST | Type::LARGE_LIST |
+
+### 5. List View 布局（List View）
 ```cpp
 // List View 数组
 
